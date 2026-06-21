@@ -316,6 +316,85 @@ HX-240615-01\tQuercus variabilis\t江苏南京紫金山\t320m\t陈晓峰\t向阳
 
 type ViewType = "main" | "photoTask" | "specimenDetail";
 
+interface ConflictPair {
+  oldRecord: SpecimenRecord;
+  newRecord: SpecimenRecord;
+  resolved: boolean;
+  resolution?: "keep" | "overwrite" | "copy";
+}
+
+const CONFLICT_FIELDS = [
+  { key: "speciesName", label: "物种名称" },
+  { key: "collectionLocation", label: "采集地点" },
+  { key: "altitude", label: "海拔" },
+  { key: "habitat", label: "生境描述" },
+  { key: "collector", label: "采集人" },
+  { key: "pressStatus", label: "压制状态" },
+  { key: "identifyStatus", label: "鉴定状态" },
+];
+
+function detectConflicts(
+  newRecords: SpecimenRecord[],
+  existingRecords: SpecimenRecord[]
+): ConflictPair[] {
+  const conflicts: ConflictPair[] = [];
+  const existingMap = new Map<string, SpecimenRecord>();
+  existingRecords.forEach((r) => {
+    if (r.collectionNo) {
+      existingMap.set(r.collectionNo, r);
+    }
+  });
+
+  const seenInBatch = new Map<string, SpecimenRecord>();
+  newRecords.forEach((r) => {
+    if (!r.collectionNo) return;
+    const existing = existingMap.get(r.collectionNo);
+    if (existing) {
+      conflicts.push({
+        oldRecord: existing,
+        newRecord: r,
+        resolved: false,
+      });
+    }
+    const batchPrev = seenInBatch.get(r.collectionNo);
+    if (batchPrev) {
+      conflicts.push({
+        oldRecord: batchPrev,
+        newRecord: r,
+        resolved: false,
+      });
+    }
+    seenInBatch.set(r.collectionNo, r);
+  });
+
+  return conflicts;
+}
+
+function resolveConflictCopy(record: SpecimenRecord, suffix: string): SpecimenRecord {
+  return {
+    ...record,
+    id: generateId(),
+    collectionNo: `${record.collectionNo}${suffix}`,
+    isDuplicate: false,
+  };
+}
+
+function resolveConflictOverwrite(
+  oldRecord: SpecimenRecord,
+  newRecord: SpecimenRecord
+): SpecimenRecord {
+  return {
+    ...oldRecord,
+    speciesName: newRecord.speciesName || oldRecord.speciesName,
+    collectionLocation: newRecord.collectionLocation || oldRecord.collectionLocation,
+    altitude: newRecord.altitude || oldRecord.altitude,
+    habitat: newRecord.habitat || oldRecord.habitat,
+    collector: newRecord.collector || oldRecord.collector,
+    pressStatus: newRecord.pressStatus || oldRecord.pressStatus,
+    identifyStatus: newRecord.identifyStatus || oldRecord.identifyStatus,
+  };
+}
+
 function App() {
   const [rawInput, setRawInput] = useState("");
   const [parsedRecords, setParsedRecords] = useState<SpecimenRecord[]>([]);
@@ -496,6 +575,13 @@ function App() {
 
   const [previewPositions, setPreviewPositions] = useState<Record<string, StoragePosition>>({});
   const [batchPosition, setBatchPosition] = useState<StoragePosition>({ ...EMPTY_POSITION });
+
+  const [showConflictPanel, setShowConflictPanel] = useState(false);
+  const [conflictPairs, setConflictPairs] = useState<ConflictPair[]>([]);
+  const [currentConflictIndex, setCurrentConflictIndex] = useState(0);
+  const [conflictSource, setConflictSource] = useState<"batch" | "single">("batch");
+  const [singleConflictRecord, setSingleConflictRecord] = useState<SpecimenRecord | null>(null);
+  const [conflictCopySuffix, setConflictCopySuffix] = useState("-副本1");
 
   const existingCollectionNos = useMemo(() => {
     return new Set(queue.map((r) => r.collectionNo).filter(Boolean));
@@ -707,8 +793,20 @@ function App() {
   };
 
   const handleImportToQueue = () => {
-    const toImport = parsedRecords
-      .filter((r) => r.selected && !r.isDuplicate)
+    const selectedRecords = parsedRecords.filter((r) => r.selected);
+    if (selectedRecords.length === 0) return;
+
+    const conflicts = detectConflicts(selectedRecords, queue);
+    if (conflicts.length > 0) {
+      setConflictPairs(conflicts);
+      setCurrentConflictIndex(0);
+      setConflictSource("batch");
+      setShowConflictPanel(true);
+      return;
+    }
+
+    const toImport = selectedRecords
+      .filter((r) => !r.isDuplicate)
       .map((r) => {
         const pos = previewPositions[r.id];
         const storageFormatted = pos ? formatStoragePosition(pos) : "";
@@ -829,6 +927,18 @@ function App() {
       photoRemark: "",
     };
 
+    if (newRecord.isDuplicate && newRecord.collectionNo) {
+      const conflicts = detectConflicts([newRecord], queue);
+      if (conflicts.length > 0) {
+        setConflictPairs(conflicts);
+        setCurrentConflictIndex(0);
+        setConflictSource("single");
+        setSingleConflictRecord(newRecord);
+        setShowConflictPanel(true);
+        return;
+      }
+    }
+
     setQueue((prev) => [newRecord, ...prev]);
     setSingleForm({
       collectionNo: "",
@@ -846,6 +956,167 @@ function App() {
     return REQUIRED_FIELDS.some(
       ({ key }) => singleForm[key as keyof typeof singleForm]
     );
+  };
+
+  const currentConflict = conflictPairs[currentConflictIndex] || null;
+
+  const handleConflictKeep = () => {
+    setConflictPairs((prev) =>
+      prev.map((pair, idx) =>
+        idx === currentConflictIndex ? { ...pair, resolved: true, resolution: "keep" } : pair
+      )
+    );
+    if (currentConflictIndex < conflictPairs.length - 1) {
+      setCurrentConflictIndex((prev) => prev + 1);
+    }
+  };
+
+  const handleConflictOverwrite = () => {
+    setConflictPairs((prev) =>
+      prev.map((pair, idx) =>
+        idx === currentConflictIndex ? { ...pair, resolved: true, resolution: "overwrite" } : pair
+      )
+    );
+    if (currentConflictIndex < conflictPairs.length - 1) {
+      setCurrentConflictIndex((prev) => prev + 1);
+    }
+  };
+
+  const handleConflictCopy = () => {
+    setConflictPairs((prev) =>
+      prev.map((pair, idx) =>
+        idx === currentConflictIndex ? { ...pair, resolved: true, resolution: "copy" } : pair
+      )
+    );
+    if (currentConflictIndex < conflictPairs.length - 1) {
+      setCurrentConflictIndex((prev) => prev + 1);
+    }
+  };
+
+  const handleCloseConflictPanel = () => {
+    setShowConflictPanel(false);
+    setConflictPairs([]);
+    setCurrentConflictIndex(0);
+    setSingleConflictRecord(null);
+    setConflictCopySuffix("-副本1");
+  };
+
+  const handleApplyConflicts = () => {
+    if (conflictSource === "batch") {
+      applyBatchConflictResolutions();
+    } else {
+      applySingleConflictResolution();
+    }
+    handleCloseConflictPanel();
+  };
+
+  const applyBatchConflictResolutions = () => {
+    let updatedQueue = [...queue];
+    const resolvedNewIds = new Set<string>();
+    const newRecordsToAdd: SpecimenRecord[] = [];
+
+    conflictPairs.forEach((pair) => {
+      if (!pair.resolved) return;
+
+      const oldId = pair.oldRecord.id;
+      const newId = pair.newRecord.id;
+
+      if (pair.resolution === "overwrite") {
+        const updated = resolveConflictOverwrite(pair.oldRecord, pair.newRecord);
+        const queueIdx = updatedQueue.findIndex((r) => r.id === oldId);
+        if (queueIdx !== -1) {
+          updatedQueue[queueIdx] = updated;
+        }
+        resolvedNewIds.add(newId);
+      } else if (pair.resolution === "keep") {
+        resolvedNewIds.add(newId);
+      } else if (pair.resolution === "copy") {
+        const copyRecord = resolveConflictCopy(pair.newRecord, conflictCopySuffix);
+        const pos = previewPositions[pair.newRecord.id];
+        if (pos) {
+          copyRecord.storagePosition = { ...pos };
+          copyRecord.storageLocation = formatStoragePosition(pos);
+        }
+        newRecordsToAdd.push(copyRecord);
+        resolvedNewIds.add(newId);
+      }
+    });
+
+    const remainingParsed = parsedRecords.filter((r) => !resolvedNewIds.has(r.id));
+    const toImport = remainingParsed
+      .filter((r) => r.selected && !r.isDuplicate)
+      .map((r) => {
+        const pos = previewPositions[r.id];
+        const storageFormatted = pos ? formatStoragePosition(pos) : "";
+        return {
+          ...r,
+          selected: false,
+          storageLocation: storageFormatted,
+          storagePosition: storageFormatted ? { ...pos } : undefined,
+        };
+      });
+
+    setQueue([...newRecordsToAdd, ...toImport, ...updatedQueue]);
+    setParsedRecords([]);
+    setRawInput("");
+    setShowPreview(false);
+    setPreviewPositions({});
+    setBatchPosition({ ...EMPTY_POSITION });
+  };
+
+  const applySingleConflictResolution = () => {
+    if (!singleConflictRecord) return;
+    const pair = conflictPairs[0];
+    if (!pair || !pair.resolved) return;
+
+    if (pair.resolution === "overwrite") {
+      const updated = resolveConflictOverwrite(pair.oldRecord, pair.newRecord);
+      setQueue((prev) => prev.map((r) => (r.id === pair.oldRecord.id ? updated : r)));
+    } else if (pair.resolution === "copy") {
+      const copyRecord = resolveConflictCopy(pair.newRecord, conflictCopySuffix);
+      const storageFormatted = formatStoragePosition(singlePosition);
+      copyRecord.storageLocation = storageFormatted;
+      copyRecord.storagePosition = storageFormatted ? { ...singlePosition } : undefined;
+      setQueue((prev) => [copyRecord, ...prev]);
+    }
+
+    setSingleForm({
+      collectionNo: "",
+      speciesName: "",
+      collectionLocation: "",
+      altitude: "",
+      collector: "",
+      habitat: "",
+    });
+    setSinglePosition({ ...EMPTY_POSITION });
+    setShowSingleForm(false);
+  };
+
+  const handlePrevConflict = () => {
+    if (currentConflictIndex > 0) {
+      setCurrentConflictIndex((prev) => prev - 1);
+    }
+  };
+
+  const handleNextConflict = () => {
+    if (currentConflictIndex < conflictPairs.length - 1) {
+      setCurrentConflictIndex((prev) => prev + 1);
+    }
+  };
+
+  const allConflictsResolved = conflictPairs.length > 0 && conflictPairs.every((p) => p.resolved);
+  const resolvedCount = conflictPairs.filter((p) => p.resolved).length;
+
+  const handleOpenBatchConflicts = () => {
+    const duplicateRecords = parsedRecords.filter((r) => r.isDuplicate);
+    if (duplicateRecords.length === 0) return;
+    const conflicts = detectConflicts(duplicateRecords, queue);
+    if (conflicts.length > 0) {
+      setConflictPairs(conflicts);
+      setCurrentConflictIndex(0);
+      setConflictSource("batch");
+      setShowConflictPanel(true);
+    }
   };
 
   const getStatusBadgeClass = (status: string) => {
@@ -1187,6 +1458,14 @@ function App() {
                 </div>
                 <div className="preview-buttons">
                   <button onClick={handleClearPreview}>取消</button>
+                  {previewStats.duplicates > 0 && (
+                    <button
+                      className="btn-outline"
+                      onClick={handleOpenBatchConflicts}
+                    >
+                      处理全部冲突 ({previewStats.duplicates})
+                    </button>
+                  )}
                   <button
                     className="primary"
                     onClick={handleImportToQueue}
@@ -1452,7 +1731,20 @@ function App() {
                               缺{r.missingFields.length}项
                             </span>
                           ) : r.isDuplicate ? (
-                            <span className="dup-text">无法导入</span>
+                            <button
+                              className="btn-small resolve-conflict-btn"
+                              onClick={() => {
+                                const conflicts = detectConflicts([r], queue);
+                                if (conflicts.length > 0) {
+                                  setConflictPairs(conflicts);
+                                  setCurrentConflictIndex(0);
+                                  setConflictSource("batch");
+                                  setShowConflictPanel(true);
+                                }
+                              }}
+                            >
+                              ⚠ 处理冲突
+                            </button>
                           ) : (
                             <span className="ok-text">就绪</span>
                           )}
@@ -1968,11 +2260,196 @@ function App() {
     );
   };
 
+  const renderConflictPanel = () => {
+    if (!showConflictPanel || !currentConflict) return null;
+
+    const { oldRecord, newRecord, resolution, resolved } = currentConflict;
+
+    return (
+      <div className="conflict-modal-overlay" onClick={handleCloseConflictPanel}>
+        <div className="conflict-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="conflict-header">
+            <div>
+              <p className="conflict-breadcrumb">
+                采集号冲突处理 · {currentConflictIndex + 1} / {conflictPairs.length}
+              </p>
+              <h2>
+                ⚠️ 采集号冲突：{newRecord.collectionNo}
+                <span className="conflict-progress">
+                  已处理 {resolvedCount} / {conflictPairs.length}
+                </span>
+              </h2>
+            </div>
+            <button className="conflict-close" onClick={handleCloseConflictPanel}>
+              ✕
+            </button>
+          </div>
+
+          <div className="conflict-nav">
+            <button
+              className="conflict-nav-btn"
+              onClick={handlePrevConflict}
+              disabled={currentConflictIndex === 0}
+            >
+              ← 上一条
+            </button>
+            <div className="conflict-nav-dots">
+              {conflictPairs.map((pair, idx) => (
+                <span
+                  key={idx}
+                  className={`conflict-dot ${
+                    idx === currentConflictIndex
+                      ? "dot-current"
+                      : pair.resolved
+                      ? "dot-resolved"
+                      : "dot-pending"
+                  }`}
+                  onClick={() => setCurrentConflictIndex(idx)}
+                />
+              ))}
+            </div>
+            <button
+              className="conflict-nav-btn"
+              onClick={handleNextConflict}
+              disabled={currentConflictIndex === conflictPairs.length - 1}
+            >
+              下一条 →
+            </button>
+          </div>
+
+          <div className="conflict-compare-grid">
+            <div className="conflict-column conflict-old">
+              <div className="conflict-col-header">
+                <span className="conflict-col-badge old-badge">现有记录</span>
+                <span className="conflict-col-no">{oldRecord.collectionNo}</span>
+              </div>
+              <div className="conflict-fields">
+                {CONFLICT_FIELDS.map((field) => {
+                  const oldVal = oldRecord[field.key as keyof SpecimenRecord];
+                  const newVal = newRecord[field.key as keyof SpecimenRecord];
+                  const isDiff = oldVal !== newVal;
+                  return (
+                    <div
+                      key={field.key}
+                      className={`conflict-field ${isDiff ? "field-diff-old" : ""}`}
+                    >
+                      <span className="conflict-field-label">{field.label}</span>
+                      <span className="conflict-field-value">
+                        {oldVal || <em>未填写</em>}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="conflict-arrow-col">
+              <div className="conflict-arrow">→</div>
+            </div>
+
+            <div className="conflict-column conflict-new">
+              <div className="conflict-col-header">
+                <span className="conflict-col-badge new-badge">新记录</span>
+                <span className="conflict-col-no">{newRecord.collectionNo}</span>
+              </div>
+              <div className="conflict-fields">
+                {CONFLICT_FIELDS.map((field) => {
+                  const oldVal = oldRecord[field.key as keyof SpecimenRecord];
+                  const newVal = newRecord[field.key as keyof SpecimenRecord];
+                  const isDiff = oldVal !== newVal;
+                  return (
+                    <div
+                      key={field.key}
+                      className={`conflict-field ${isDiff ? "field-diff-new" : ""}`}
+                    >
+                      <span className="conflict-field-label">{field.label}</span>
+                      <span className="conflict-field-value">
+                        {newVal || <em>未填写</em>}
+                        {isDiff && <span className="diff-tag">差异</span>}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
+          <div className="conflict-actions">
+            <div className="conflict-action-group">
+              <button
+                className={`conflict-btn btn-keep ${
+                  resolved && resolution === "keep" ? "btn-selected" : ""
+                }`}
+                onClick={handleConflictKeep}
+              >
+                <span className="btn-icon">📋</span>
+                <span className="btn-title">保留旧记录</span>
+                <span className="btn-desc">放弃新录入的数据</span>
+              </button>
+
+              <button
+                className={`conflict-btn btn-overwrite ${
+                  resolved && resolution === "overwrite" ? "btn-selected" : ""
+                }`}
+                onClick={handleConflictOverwrite}
+              >
+                <span className="btn-icon">🔄</span>
+                <span className="btn-title">覆盖字段</span>
+                <span className="btn-desc">用新数据更新旧记录</span>
+              </button>
+
+              <div
+                className={`conflict-btn btn-copy ${
+                  resolved && resolution === "copy" ? "btn-selected" : ""
+                }`}
+              >
+                <div className="btn-copy-header" onClick={handleConflictCopy}>
+                  <span className="btn-icon">📝</span>
+                  <span className="btn-title">另存为副本</span>
+                  <span className="btn-desc">保留两者，新记录加后缀</span>
+                </div>
+                <div className="btn-copy-input">
+                  <label>
+                    <span>后缀名</span>
+                    <input
+                      type="text"
+                      value={conflictCopySuffix}
+                      onChange={(e) => setConflictCopySuffix(e.target.value)}
+                      placeholder="-副本1"
+                    />
+                  </label>
+                  <span className="copy-preview">
+                    预览：{newRecord.collectionNo}
+                    {conflictCopySuffix}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="conflict-footer">
+            <button className="ghost-btn" onClick={handleCloseConflictPanel}>
+              取消
+            </button>
+            <button
+              className="primary"
+              onClick={handleApplyConflicts}
+              disabled={!allConflictsResolved}
+            >
+              应用全部处理结果 ({resolvedCount}/{conflictPairs.length})
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <main className="app">
       {currentView === "main" && renderMainView()}
       {currentView === "photoTask" && renderPhotoTaskView()}
       {currentView === "specimenDetail" && renderDetailView()}
+      {renderConflictPanel()}
     </main>
   );
 }
