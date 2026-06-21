@@ -1016,6 +1016,11 @@ function App() {
     setDetailSpecimenId(null);
   };
 
+  const handleBackToLocationDetail = () => {
+    setCurrentView("locationDetail");
+    setDetailSpecimenId(null);
+  };
+
   const handleOpenSpecimenFromLocation = (specimenId: string) => {
     setDetailSpecimenId(specimenId);
     setDetailFromLocation(true);
@@ -3280,7 +3285,7 @@ function App() {
     const isPending = r.status === "需补照" && r.missingPhotoTypes.length > 0;
     const handleBack = () => {
       if (detailFromLocation) {
-        handleBackToLocationList();
+        handleBackToLocationDetail();
       } else {
         handleBackToPhotoTask();
       }
@@ -3299,7 +3304,7 @@ function App() {
             {detailFromLocation && selectedLocationName && (
               <>
                 <span className="sep">/</span>
-                <button className="link-btn" onClick={handleBackToLocationList}>
+                <button className="link-btn" onClick={handleBackToLocationDetail}>
                   {selectedLocationName}
                 </button>
               </>
