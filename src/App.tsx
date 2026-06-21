@@ -10,6 +10,42 @@ interface PhotoRecord {
   remark?: string;
 }
 
+type IdentifyTaskStatus = "待分派" | "鉴定中" | "已完成" | "已退回";
+
+interface IdentifyTaskRecord {
+  id: string;
+  specimenId: string;
+  collectionNo: string;
+  assignedTo: string | null;
+  assignedAt: string | null;
+  status: IdentifyTaskStatus;
+  rejectReason?: string;
+  rejectedAt?: string;
+  completedAt?: string;
+  completedRemark?: string;
+  history: IdentifyTaskHistory[];
+}
+
+interface IdentifyTaskHistory {
+  id: string;
+  timestamp: string;
+  operator: string;
+  action: "分派任务" | "开始鉴定" | "完成鉴定" | "退回任务" | "重新分派";
+  assignedTo?: string;
+  remark?: string;
+}
+
+interface Identifier {
+  id: string;
+  name: string;
+  expertise: string[];
+  activeTaskCount: number;
+  avatar?: string;
+}
+
+type GroupByType = "none" | "family" | "location" | "collector";
+type IdentifyTaskTab = "pending" | "inProgress" | "completed" | "rejected";
+
 interface StoragePosition {
   floor: string;
   cabinet: string;
@@ -36,6 +72,8 @@ interface SpecimenRecord {
   missingPhotoTypes: string[];
   photoRecords: PhotoRecord[];
   photoRemark: string;
+  identifyTaskId?: string;
+  family?: string;
 }
 
 const PHOTO_TYPES = ["标本整体照", "标签特写", "叶片正面", "叶片背面", "花果特写", "生境照"];
@@ -282,6 +320,7 @@ function rowsToRecords(rows: string[][]): SpecimenRecord[] {
       missingPhotoTypes: [],
       photoRecords: [],
       photoRemark: "",
+      family: inferFamily(record.speciesName || ""),
     };
   });
 }
@@ -314,7 +353,99 @@ HX-240620-003\tRhododendron simsii\t安徽黄山风景区\t1650m\t王建国\t山
 HX-240620-004\t\t浙江天目山\t1100m\t\t林下
 HX-240615-01\tQuercus variabilis\t江苏南京紫金山\t320m\t陈晓峰\t向阳山坡`;
 
-type ViewType = "main" | "photoTask" | "specimenDetail";
+const IDENTIFIERS: Identifier[] = [
+  { id: "id-1", name: "王教授", expertise: ["槭树科", "壳斗科", "樟科"], activeTaskCount: 2 },
+  { id: "id-2", name: "李研究员", expertise: ["杜鹃花科", "山茶科", "蔷薇科"], activeTaskCount: 1 },
+  { id: "id-3", name: "张博士", expertise: ["蕨类植物", "苔藓植物"], activeTaskCount: 0 },
+  { id: "id-4", name: "陈老师", expertise: ["菊科", "豆科", "唇形科"], activeTaskCount: 3 },
+  { id: "id-5", name: "赵专家", expertise: ["禾本科", "莎草科"], activeTaskCount: 1 },
+];
+
+const INITIAL_IDENTIFY_TASKS: IdentifyTaskRecord[] = [
+  {
+    id: "task-1",
+    specimenId: "init-photo-1",
+    collectionNo: "HX-240610-015",
+    assignedTo: "王教授",
+    assignedAt: "2024-06-18 10:00",
+    status: "鉴定中",
+    history: [
+      {
+        id: "th-1",
+        timestamp: "2024-06-18 10:00",
+        operator: "系统管理员",
+        action: "分派任务",
+        assignedTo: "王教授",
+        remark: "樟科标本，优先处理",
+      },
+    ],
+  },
+  {
+    id: "task-2",
+    specimenId: "init-photo-2",
+    collectionNo: "HX-240612-042",
+    assignedTo: "李研究员",
+    assignedAt: "2024-06-19 09:30",
+    status: "已退回",
+    rejectReason: "标本照片不清晰，花果特征无法辨认，需要重新拍照后再鉴定。",
+    rejectedAt: "2024-06-20 14:20",
+    history: [
+      {
+        id: "th-2",
+        timestamp: "2024-06-19 09:30",
+        operator: "系统管理员",
+        action: "分派任务",
+        assignedTo: "李研究员",
+      },
+      {
+        id: "th-3",
+        timestamp: "2024-06-20 14:20",
+        operator: "李研究员",
+        action: "退回任务",
+        remark: "标本照片不清晰，花果特征无法辨认，需要重新拍照后再鉴定。",
+      },
+    ],
+  },
+];
+
+const FAMILY_MAP: Record<string, string> = {
+  "Acer": "槭树科",
+  "槭属": "槭树科",
+  "Pteridium": "蕨科",
+  "蕨类": "蕨科",
+  "Rhododendron": "杜鹃花科",
+  "Quercus": "壳斗科",
+  "Lindera": "樟科",
+  "Rosa": "蔷薇科",
+  "菊科": "菊科",
+};
+
+function inferFamily(speciesName: string): string | undefined {
+  if (!speciesName) return undefined;
+  for (const [key, family] of Object.entries(FAMILY_MAP)) {
+    if (speciesName.includes(key)) {
+      return family;
+    }
+  }
+  return undefined;
+}
+
+function getTaskStatusBadgeClass(status: IdentifyTaskStatus): string {
+  switch (status) {
+    case "待分派":
+      return "badge-pending";
+    case "鉴定中":
+      return "badge-review";
+    case "已完成":
+      return "badge-done";
+    case "已退回":
+      return "badge-warn";
+    default:
+      return "";
+  }
+}
+
+type ViewType = "main" | "photoTask" | "specimenDetail" | "identifyTask";
 
 interface ConflictPair {
   oldRecord: SpecimenRecord;
@@ -439,6 +570,7 @@ function App() {
       missingPhotoTypes: [],
       photoRecords: [],
       photoRemark: "",
+      family: "槭树科",
     },
     {
       id: "init-2",
@@ -458,6 +590,7 @@ function App() {
       missingPhotoTypes: [],
       photoRecords: [],
       photoRemark: "",
+      family: "蕨科",
     },
     {
       id: "init-3",
@@ -478,6 +611,67 @@ function App() {
       missingPhotoTypes: [],
       photoRecords: [],
       photoRemark: "",
+      family: "菊科",
+    },
+    {
+      id: "init-4",
+      collectionNo: "HX-240618-05",
+      speciesName: "Rhododendron simsii",
+      collectionLocation: "安徽黄山风景区",
+      altitude: "1550m",
+      collector: "王建国",
+      habitat: "山顶灌丛，多雾",
+      status: "待鉴定",
+      storageLocation: "",
+      pressStatus: "已压制",
+      identifyStatus: "待鉴定",
+      missingFields: [],
+      isDuplicate: false,
+      selected: false,
+      missingPhotoTypes: [],
+      photoRecords: [],
+      photoRemark: "",
+      family: "杜鹃花科",
+    },
+    {
+      id: "init-5",
+      collectionNo: "HX-240618-12",
+      speciesName: "Acer palmatum",
+      collectionLocation: "浙江天目山",
+      altitude: "1200m",
+      collector: "李明阳",
+      habitat: "山坡阔叶林中",
+      status: "待鉴定",
+      storageLocation: "",
+      pressStatus: "已压制",
+      identifyStatus: "待鉴定",
+      missingFields: [],
+      isDuplicate: false,
+      selected: false,
+      missingPhotoTypes: [],
+      photoRecords: [],
+      photoRemark: "",
+      family: "槭树科",
+    },
+    {
+      id: "init-6",
+      collectionNo: "HX-240619-07",
+      speciesName: "Pteridium aquilinum",
+      collectionLocation: "浙江天目山国家级自然保护区",
+      altitude: "950m",
+      collector: "李明阳",
+      habitat: "林缘阴湿处",
+      status: "待鉴定",
+      storageLocation: "",
+      pressStatus: "已压制",
+      identifyStatus: "待鉴定",
+      missingFields: [],
+      isDuplicate: false,
+      selected: false,
+      missingPhotoTypes: [],
+      photoRecords: [],
+      photoRemark: "",
+      family: "蕨科",
     },
     {
       id: "init-photo-1",
@@ -507,6 +701,8 @@ function App() {
         },
       ],
       photoRemark: "",
+      identifyTaskId: "task-1",
+      family: "樟科",
     },
     {
       id: "init-photo-2",
@@ -536,6 +732,8 @@ function App() {
         },
       ],
       photoRemark: "",
+      identifyTaskId: "task-2",
+      family: "蔷薇科",
     },
     {
       id: "init-photo-3",
@@ -572,8 +770,20 @@ function App() {
         },
       ],
       photoRemark: "柜位钥匙由王老师保管",
+      family: "壳斗科",
     },
   ]);
+
+  const [identifyTasks, setIdentifyTasks] = useState<IdentifyTaskRecord[]>(INITIAL_IDENTIFY_TASKS);
+  const [identifyTaskTab, setIdentifyTaskTab] = useState<IdentifyTaskTab>("pending");
+  const [groupBy, setGroupBy] = useState<GroupByType>("none");
+  const [selectedSpecimens, setSelectedSpecimens] = useState<Set<string>>(new Set());
+  const [selectedIdentifier, setSelectedIdentifier] = useState<string>("");
+  const [assignRemark, setAssignRemark] = useState<string>("");
+  const [showRejectModal, setShowRejectModal] = useState<string | null>(null);
+  const [rejectReason, setRejectReason] = useState<string>("");
+  const [showCompleteModal, setShowCompleteModal] = useState<string | null>(null);
+  const [completeRemark, setCompleteRemark] = useState<string>("");
   const [activeFilter, setActiveFilter] = useState<string | null>(null);
   const [showPreview, setShowPreview] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -609,14 +819,41 @@ function App() {
     return new Set(queue.map((r) => r.collectionNo).filter(Boolean));
   }, [queue]);
 
+  const pendingAssignSpecimens = useMemo(() => {
+    return queue.filter((r) => r.status === "待鉴定" && !r.identifyTaskId);
+  }, [queue]);
+
+  const inProgressTasks = useMemo(() => {
+    return identifyTasks.filter((t) => t.status === "鉴定中");
+  }, [identifyTasks]);
+
+  const completedTasks = useMemo(() => {
+    return identifyTasks.filter((t) => t.status === "已完成");
+  }, [identifyTasks]);
+
+  const rejectedTasks = useMemo(() => {
+    return identifyTasks.filter((t) => t.status === "已退回");
+  }, [identifyTasks]);
+
+  const identifyTaskMetrics = useMemo(() => {
+    return {
+      pending: pendingAssignSpecimens.length,
+      inProgress: inProgressTasks.length,
+      completed: completedTasks.length,
+      rejected: rejectedTasks.length,
+      total: identifyTasks.length,
+    };
+  }, [pendingAssignSpecimens, inProgressTasks, completedTasks, rejectedTasks, identifyTasks]);
+
   const metrics = useMemo(() => {
+    const totalPendingIdentify = pendingAssignSpecimens.length + inProgressTasks.length + rejectedTasks.length;
     return {
       queue: queue.filter((r) => r.status !== "已入库").length,
-      pendingId: queue.filter((r) => r.identifyStatus === "待鉴定").length,
+      pendingId: totalPendingIdentify,
       stored: queue.filter((r) => r.status === "已入库").length,
       locations: new Set(queue.map((r) => r.collectionLocation).filter(Boolean)).size,
     };
-  }, [queue]);
+  }, [queue, pendingAssignSpecimens, inProgressTasks, rejectedTasks]);
 
   const photoMetrics = useMemo(() => {
     const photoRecords = queue.filter((r) => r.status === "需补照" || r.photoRecords.length > 0);
@@ -658,9 +895,235 @@ function App() {
     setCurrentView("photoTask");
   };
 
+  const handleOpenIdentifyTask = () => {
+    setCurrentView("identifyTask");
+    setIdentifyTaskTab("pending");
+    setSelectedSpecimens(new Set());
+    setSelectedIdentifier("");
+    setAssignRemark("");
+  };
+
   const handleBackToMain = () => {
     setCurrentView("main");
     setDetailSpecimenId(null);
+  };
+
+  const handleBackToIdentifyTask = () => {
+    setCurrentView("identifyTask");
+    setDetailSpecimenId(null);
+  };
+
+  const handleToggleSpecimenSelect = (specimenId: string) => {
+    setSelectedSpecimens((prev) => {
+      const next = new Set(prev);
+      if (next.has(specimenId)) {
+        next.delete(specimenId);
+      } else {
+        next.add(specimenId);
+      }
+      return next;
+    });
+  };
+
+  const handleSelectAllSpecimens = () => {
+    if (selectedSpecimens.size === pendingAssignSpecimens.length) {
+      setSelectedSpecimens(new Set());
+    } else {
+      setSelectedSpecimens(new Set(pendingAssignSpecimens.map((s) => s.id)));
+    }
+  };
+
+  const handleGroupSelect = (groupKey: string, specimens: SpecimenRecord[]) => {
+    const allSelected = specimens.every((s) => selectedSpecimens.has(s.id));
+    setSelectedSpecimens((prev) => {
+      const next = new Set(prev);
+      if (allSelected) {
+        specimens.forEach((s) => next.delete(s.id));
+      } else {
+        specimens.forEach((s) => next.add(s.id));
+      }
+      return next;
+    });
+  };
+
+  const getGroupedSpecimens = useMemo(() => {
+    const result: { key: string; label: string; specimens: SpecimenRecord[] }[] = [];
+    if (groupBy === "none") {
+      return [{ key: "all", label: "全部待分派", specimens: pendingAssignSpecimens }];
+    }
+    const groups = new Map<string, SpecimenRecord[]>();
+    pendingAssignSpecimens.forEach((s) => {
+      let key = "";
+      if (groupBy === "family") {
+        key = s.family || "未确定科属";
+      } else if (groupBy === "location") {
+        key = s.collectionLocation || "未记录采集地点";
+      } else if (groupBy === "collector") {
+        key = s.collector || "未记录采集人";
+      }
+      if (!groups.has(key)) {
+        groups.set(key, []);
+      }
+      groups.get(key)!.push(s);
+    });
+    groups.forEach((specimens, key) => {
+      result.push({ key, label: key, specimens });
+    });
+    return result.sort((a, b) => a.label.localeCompare(b.label, "zh"));
+  }, [pendingAssignSpecimens, groupBy]);
+
+  const handleAssignTasks = () => {
+    if (selectedSpecimens.size === 0 || !selectedIdentifier) return;
+    const identifier = IDENTIFIERS.find((i) => i.id === selectedIdentifier);
+    if (!identifier) return;
+    const now = formatNow();
+    const newTasks: IdentifyTaskRecord[] = [];
+    const specimenIds = Array.from(selectedSpecimens);
+    queue.forEach((s) => {
+      if (specimenIds.includes(s.id)) {
+        const taskId = generateId();
+        newTasks.push({
+          id: taskId,
+          specimenId: s.id,
+          collectionNo: s.collectionNo,
+          assignedTo: identifier.name,
+          assignedAt: now,
+          status: "鉴定中",
+          history: [
+            {
+              id: generateId(),
+              timestamp: now,
+              operator: "当前用户",
+              action: "分派任务",
+              assignedTo: identifier.name,
+              remark: assignRemark || undefined,
+            },
+          ],
+        });
+      }
+    });
+    setIdentifyTasks((prev) => [...prev, ...newTasks]);
+    setQueue((prev) =>
+      prev.map((s) => {
+        const task = newTasks.find((t) => t.specimenId === s.id);
+        if (task) {
+          return { ...s, identifyTaskId: task.id };
+        }
+        return s;
+      })
+    );
+    setSelectedSpecimens(new Set());
+    setSelectedIdentifier("");
+    setAssignRemark("");
+  };
+
+  const handleStartIdentify = (taskId: string) => {
+    const now = formatNow();
+    setIdentifyTasks((prev) =>
+      prev.map((t) => {
+        if (t.id !== taskId) return t;
+        return {
+          ...t,
+          status: "鉴定中",
+          history: [
+            ...t.history,
+            {
+              id: generateId(),
+              timestamp: now,
+              operator: "当前用户",
+              action: "开始鉴定",
+            },
+          ],
+        };
+      })
+    );
+  };
+
+  const handleOpenCompleteModal = (taskId: string) => {
+    setShowCompleteModal(taskId);
+    setCompleteRemark("");
+  };
+
+  const handleCompleteTask = () => {
+    if (!showCompleteModal) return;
+    const now = formatNow();
+    setIdentifyTasks((prev) =>
+      prev.map((t) => {
+        if (t.id !== showCompleteModal) return t;
+        return {
+          ...t,
+          status: "已完成",
+          completedAt: now,
+          completedRemark: completeRemark || undefined,
+          history: [
+            ...t.history,
+            {
+              id: generateId(),
+              timestamp: now,
+              operator: "当前用户",
+              action: "完成鉴定",
+              remark: completeRemark || undefined,
+            },
+          ],
+        };
+      })
+    );
+    const task = identifyTasks.find((t) => t.id === showCompleteModal);
+    if (task) {
+      setQueue((prev) =>
+        prev.map((s) => {
+          if (s.id !== task.specimenId) return s;
+          return { ...s, identifyStatus: "已鉴定", status: "已入库" as const };
+        })
+      );
+    }
+    setShowCompleteModal(null);
+    setCompleteRemark("");
+  };
+
+  const handleOpenRejectModal = (taskId: string) => {
+    setShowRejectModal(taskId);
+    setRejectReason("");
+  };
+
+  const handleRejectTask = () => {
+    if (!showRejectModal || !rejectReason.trim()) return;
+    const now = formatNow();
+    setIdentifyTasks((prev) =>
+      prev.map((t) => {
+        if (t.id !== showRejectModal) return t;
+        return {
+          ...t,
+          status: "已退回",
+          rejectReason: rejectReason,
+          rejectedAt: now,
+          history: [
+            ...t.history,
+            {
+              id: generateId(),
+              timestamp: now,
+              operator: "当前用户",
+              action: "退回任务",
+              remark: rejectReason,
+            },
+          ],
+        };
+      })
+    );
+    setShowRejectModal(null);
+    setRejectReason("");
+  };
+
+  const handleReassignTask = (taskId: string) => {
+    const task = identifyTasks.find((t) => t.id === taskId);
+    if (!task) return;
+    setQueue((prev) =>
+      prev.map((s) => {
+        if (s.id !== task.specimenId) return s;
+        return { ...s, identifyTaskId: undefined };
+      })
+    );
+    setIdentifyTasks((prev) => prev.filter((t) => t.id !== taskId));
   };
 
   const handleOpenSpecimenDetail = (id: string) => {
@@ -949,6 +1412,7 @@ function App() {
       missingPhotoTypes: [],
       photoRecords: [],
       photoRemark: "",
+      family: inferFamily(singleForm.speciesName),
     };
 
     if (newRecord.isDuplicate && newRecord.collectionNo) {
@@ -1294,6 +1758,16 @@ function App() {
                 <small>进入独立工作流处理补照</small>
               </div>
               <span className="photo-task-count">{photoMetrics.pending}</span>
+            </button>
+          </div>
+          <div className="side-task-entry">
+            <button className="identify-task-entry" onClick={handleOpenIdentifyTask}>
+              <span className="identify-task-icon">🔬</span>
+              <div className="identify-task-text">
+                <strong>鉴定任务分派</strong>
+                <small>分组分派标本给鉴定人</small>
+              </div>
+              <span className="identify-task-count">{identifyTaskMetrics.pending + identifyTaskMetrics.inProgress}</span>
             </button>
           </div>
         </aside>
@@ -1923,6 +2397,461 @@ function App() {
       </section>
     </>
   );
+
+  const renderIdentifyTaskView = () => {
+    const currentTabList =
+      identifyTaskTab === "pending"
+        ? pendingAssignSpecimens
+        : identifyTaskTab === "inProgress"
+        ? inProgressTasks
+        : identifyTaskTab === "completed"
+        ? completedTasks
+        : rejectedTasks;
+
+    return (
+      <>
+        <section className="hero hero-identify">
+          <p className="breadcrumbs">
+            <button className="link-btn" onClick={handleBackToMain}>
+              ← 返回主页
+            </button>
+            <span className="sep">/</span>
+            <span>鉴定任务分派</span>
+          </p>
+          <h1>🔬 鉴定任务分派工作台</h1>
+          <span>将待鉴定标本按科属、采集地点或采集人分组后分派给鉴定人，跟踪任务状态并记录退回原因与完成情况</span>
+        </section>
+
+        <section className="metrics identify-metrics">
+          <article className="metric-pending-assign">
+            <small>待分派</small>
+            <strong>{identifyTaskMetrics.pending}</strong>
+          </article>
+          <article className="metric-in-progress">
+            <small>鉴定中</small>
+            <strong>{identifyTaskMetrics.inProgress}</strong>
+          </article>
+          <article className="metric-completed">
+            <small>已完成</small>
+            <strong>{identifyTaskMetrics.completed}</strong>
+          </article>
+          <article className="metric-rejected">
+            <small>已退回</small>
+            <strong>{identifyTaskMetrics.rejected}</strong>
+          </article>
+        </section>
+
+        <section className="panel">
+          <div className="heading">
+            <div>
+              <p>任务管理</p>
+              <h2>
+                鉴定任务列表
+                <span className="preview-summary">
+                  {identifyTaskTab === "pending" && ` · 待分派 ${identifyTaskMetrics.pending} 份`}
+                  {identifyTaskTab === "inProgress" && ` · 鉴定中 ${identifyTaskMetrics.inProgress} 份`}
+                  {identifyTaskTab === "completed" && ` · 已完成 ${identifyTaskMetrics.completed} 份`}
+                  {identifyTaskTab === "rejected" && ` · 已退回 ${identifyTaskMetrics.rejected} 份`}
+                </span>
+              </h2>
+            </div>
+            <div className="chips">
+              <button
+                className={identifyTaskTab === "pending" ? "chip-active" : ""}
+                onClick={() => setIdentifyTaskTab("pending")}
+              >
+                待分派
+              </button>
+              <button
+                className={identifyTaskTab === "inProgress" ? "chip-active" : ""}
+                onClick={() => setIdentifyTaskTab("inProgress")}
+              >
+                鉴定中
+              </button>
+              <button
+                className={identifyTaskTab === "completed" ? "chip-active" : ""}
+                onClick={() => setIdentifyTaskTab("completed")}
+              >
+                已完成
+              </button>
+              <button
+                className={identifyTaskTab === "rejected" ? "chip-active" : ""}
+                onClick={() => setIdentifyTaskTab("rejected")}
+              >
+                已退回
+              </button>
+            </div>
+          </div>
+
+          {identifyTaskTab === "pending" && (
+            <>
+              <div className="assign-toolbar">
+                <div className="group-selector">
+                  <span className="section-label">分组方式：</span>
+                  <div className="chips">
+                    <button
+                      className={groupBy === "none" ? "chip-active" : ""}
+                      onClick={() => setGroupBy("none")}
+                    >
+                      不分组
+                    </button>
+                    <button
+                      className={groupBy === "family" ? "chip-active" : ""}
+                      onClick={() => setGroupBy("family")}
+                    >
+                      按科属
+                    </button>
+                    <button
+                      className={groupBy === "location" ? "chip-active" : ""}
+                      onClick={() => setGroupBy("location")}
+                    >
+                      按采集地点
+                    </button>
+                    <button
+                      className={groupBy === "collector" ? "chip-active" : ""}
+                      onClick={() => setGroupBy("collector")}
+                    >
+                      按采集人
+                    </button>
+                  </div>
+                </div>
+                <div className="selection-info">
+                  已选 <strong>{selectedSpecimens.size}</strong> / {pendingAssignSpecimens.length} 份
+                  {pendingAssignSpecimens.length > 0 && (
+                    <button
+                      className="btn-outline btn-small"
+                      onClick={handleSelectAllSpecimens}
+                      style={{ marginLeft: "10px" }}
+                    >
+                      {selectedSpecimens.size === pendingAssignSpecimens.length ? "取消全选" : "全选"}
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {pendingAssignSpecimens.length === 0 ? (
+                <div className="empty-state">暂无待分派的鉴定任务</div>
+              ) : (
+                <div className="pending-specimen-list">
+                  {getGroupedSpecimens.map((group) => (
+                    <div key={group.key} className="specimen-group">
+                      {groupBy !== "none" && (
+                        <div className="group-header">
+                          <label className="group-checkbox">
+                            <input
+                              type="checkbox"
+                              checked={group.specimens.every((s) => selectedSpecimens.has(s.id))}
+                              onChange={() => handleGroupSelect(group.key, group.specimens)}
+                            />
+                            <span className="group-title">🌿 {group.label}</span>
+                            <span className="group-count">{group.specimens.length} 份</span>
+                          </label>
+                        </div>
+                      )}
+                      <div className="specimen-cards">
+                        {group.specimens.map((s, idx) => (
+                          <label
+                            key={s.id}
+                            className={`specimen-card ${
+                              selectedSpecimens.has(s.id) ? "card-selected" : ""
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={selectedSpecimens.has(s.id)}
+                              onChange={() => handleToggleSpecimenSelect(s.id)}
+                            />
+                            <div className="card-index">{String(idx + 1).padStart(2, "0")}</div>
+                            <div className="card-body">
+                              <div className="card-title">
+                                <h3>{s.collectionNo || "未编号"}</h3>
+                                {s.family && (
+                                  <span className="family-tag">{s.family}</span>
+                                )}
+                              </div>
+                              <p className="card-species">
+                                <strong>{s.speciesName || "物种待定"}</strong>
+                              </p>
+                              <div className="card-meta">
+                                {s.collectionLocation && (
+                                  <span>📍 {s.collectionLocation}</span>
+                                )}
+                                {s.collector && <span>👤 {s.collector}</span>}
+                                {s.altitude && <span>⛰️ {s.altitude}</span>}
+                              </div>
+                            </div>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {pendingAssignSpecimens.length > 0 && (
+                <div className="assign-panel">
+                  <div className="section-title">
+                    <span>👨‍🔬 选择鉴定人</span>
+                    <small>根据专长领域选择合适的鉴定人分派任务</small>
+                  </div>
+                  <div className="identifier-list">
+                    {IDENTIFIERS.map((idf) => (
+                      <label
+                        key={idf.id}
+                        className={`identifier-card ${
+                          selectedIdentifier === idf.id ? "identifier-selected" : ""
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="identifier"
+                          value={idf.id}
+                          checked={selectedIdentifier === idf.id}
+                          onChange={() => setSelectedIdentifier(idf.id)}
+                        />
+                        <div className="identifier-avatar">
+                          {idf.name.charAt(0)}
+                        </div>
+                        <div className="identifier-info">
+                          <div className="identifier-name">{idf.name}</div>
+                          <div className="identifier-expertise">
+                            {idf.expertise.map((e) => (
+                              <span key={e} className="expertise-tag">{e}</span>
+                            ))}
+                          </div>
+                        </div>
+                        <div className={`identifier-load load-${idf.activeTaskCount === 0 ? "low" : idf.activeTaskCount <= 2 ? "mid" : "high"}`}>
+                          <span>{idf.activeTaskCount} 个进行中</span>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                  <div className="assign-actions">
+                    <label className="remark-input">
+                      <span>分派备注（可选）</span>
+                      <textarea
+                        placeholder="填写分派说明，如：优先处理、需特别关注某特征等..."
+                        value={assignRemark}
+                        onChange={(e) => setAssignRemark(e.target.value)}
+                        rows={2}
+                      />
+                    </label>
+                    <button
+                      className="primary"
+                      onClick={handleAssignTasks}
+                      disabled={selectedSpecimens.size === 0 || !selectedIdentifier}
+                    >
+                      分派 {selectedSpecimens.size} 份标本给 {selectedIdentifier ? IDENTIFIERS.find((i) => i.id === selectedIdentifier)?.name : "鉴定人"}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {identifyTaskTab !== "pending" && (
+            <div className="task-records-list">
+              {currentTabList.length === 0 ? (
+                <div className="empty-state">
+                  {identifyTaskTab === "inProgress" && "暂无进行中的鉴定任务"}
+                  {identifyTaskTab === "completed" && "暂无已完成的鉴定任务"}
+                  {identifyTaskTab === "rejected" && "暂无已退回的鉴定任务"}
+                </div>
+              ) : (
+                currentTabList.map((task, idx) => {
+                  const specimen = queue.find((s) => s.id === task.specimenId);
+                  return (
+                    <article
+                      key={task.id}
+                      className={`task-record-card task-${task.status}`}
+                    >
+                      <div className="task-record-header">
+                        <div className="task-record-index">
+                          <b>{String(idx + 1).padStart(2, "0")}</b>
+                        </div>
+                        <div className="task-record-title">
+                          <h3>{task.collectionNo}</h3>
+                          <span className={`status-badge ${getTaskStatusBadgeClass(task.status)}`}>
+                            {task.status}
+                          </span>
+                        </div>
+                        <div className="task-assignee">
+                          {task.assignedTo && (
+                            <>
+                              <span className="assignee-label">鉴定人：</span>
+                              <span className="assignee-name">{task.assignedTo}</span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+
+                      {specimen && (
+                        <div className="task-record-body">
+                          <div className="task-specimen-info">
+                            <p>
+                              <strong>{specimen.speciesName || "物种待定"}</strong>
+                              {specimen.family && (
+                                <span className="family-tag" style={{ marginLeft: "8px" }}>
+                                  {specimen.family}
+                                </span>
+                              )}
+                            </p>
+                            <div className="card-meta">
+                              {specimen.collectionLocation && (
+                                <span>📍 {specimen.collectionLocation}</span>
+                              )}
+                              {specimen.collector && <span>👤 {specimen.collector}</span>}
+                              {specimen.altitude && <span>⛰️ {specimen.altitude}</span>}
+                            </div>
+                          </div>
+                          {task.status === "已退回" && task.rejectReason && (
+                            <div className="reject-reason-box">
+                              <small>退回原因</small>
+                              <p>⚠️ {task.rejectReason}</p>
+                              {task.rejectedAt && (
+                                <small className="reject-time">退回时间：{task.rejectedAt}</small>
+                              )}
+                            </div>
+                          )}
+                          {task.status === "已完成" && task.completedRemark && (
+                            <div className="complete-remark-box">
+                              <small>完成备注</small>
+                              <p>✅ {task.completedRemark}</p>
+                              {task.completedAt && (
+                                <small className="complete-time">完成时间：{task.completedAt}</small>
+                              )}
+                            </div>
+                          )}
+                          {task.history.length > 0 && (
+                            <div className="task-history">
+                              <small>处理记录</small>
+                              <div className="history-timeline">
+                                {[...task.history].reverse().map((h) => (
+                                  <div key={h.id} className="history-item">
+                                    <span className="history-time">{h.timestamp}</span>
+                                    <span className="history-operator">{h.operator}</span>
+                                    <span className={`history-action action-${
+                                      h.action === "完成鉴定" ? "done" :
+                                      h.action === "退回任务" ? "reject" :
+                                      h.action === "分派任务" || h.action === "重新分派" ? "assign" : "start"
+                                    }`}>{h.action}</span>
+                                    {h.assignedTo && (
+                                      <span className="history-assignee">→ {h.assignedTo}</span>
+                                    )}
+                                    {h.remark && (
+                                      <span className="history-remark">：{h.remark}</span>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      <div className="task-record-actions">
+                        {task.status === "鉴定中" && (
+                          <>
+                            <button
+                              className="btn-outline"
+                              onClick={() => handleOpenRejectModal(task.id)}
+                            >
+                              退回任务
+                            </button>
+                            <button
+                              className="primary"
+                              onClick={() => handleOpenCompleteModal(task.id)}
+                            >
+                              ✓ 完成鉴定
+                            </button>
+                          </>
+                        )}
+                        {task.status === "已退回" && (
+                          <button
+                            className="btn-outline"
+                            onClick={() => handleReassignTask(task.id)}
+                          >
+                            重新分派
+                          </button>
+                        )}
+                        {task.status === "已完成" && task.completedAt && (
+                          <span className="completed-time">完成于 {task.completedAt}</span>
+                        )}
+                      </div>
+                    </article>
+                  );
+                })
+              )}
+            </div>
+          )}
+        </section>
+
+        {showRejectModal && (
+          <div className="modal-overlay" onClick={() => setShowRejectModal(null)}>
+            <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <h2>退回鉴定任务</h2>
+                <button className="modal-close" onClick={() => setShowRejectModal(null)}>✕</button>
+              </div>
+              <div className="modal-body">
+                <label className="remark-input">
+                  <span>退回原因 *</span>
+                  <textarea
+                    placeholder="请详细说明退回原因，如：标本信息不完整、照片不清晰、需要补充资料等..."
+                    value={rejectReason}
+                    onChange={(e) => setRejectReason(e.target.value)}
+                    rows={4}
+                  />
+                </label>
+              </div>
+              <div className="modal-footer">
+                <button className="ghost-btn" onClick={() => setShowRejectModal(null)}>
+                  取消
+                </button>
+                <button
+                  className="primary"
+                  onClick={handleRejectTask}
+                  disabled={!rejectReason.trim()}
+                >
+                  确认退回
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {showCompleteModal && (
+          <div className="modal-overlay" onClick={() => setShowCompleteModal(null)}>
+            <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <h2>完成鉴定</h2>
+                <button className="modal-close" onClick={() => setShowCompleteModal(null)}>✕</button>
+              </div>
+              <div className="modal-body">
+                <label className="remark-input">
+                  <span>鉴定备注（可选）</span>
+                  <textarea
+                    placeholder="记录鉴定结果、物种学名确认、备注信息等..."
+                    value={completeRemark}
+                    onChange={(e) => setCompleteRemark(e.target.value)}
+                    rows={4}
+                  />
+                </label>
+              </div>
+              <div className="modal-footer">
+                <button className="ghost-btn" onClick={() => setShowCompleteModal(null)}>
+                  取消
+                </button>
+                <button className="primary" onClick={handleCompleteTask}>
+                  ✓ 确认完成
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </>
+    );
+  };
 
   const renderPhotoTaskView = () => (
     <>
@@ -2555,6 +3484,7 @@ function App() {
     <main className="app">
       {currentView === "main" && renderMainView()}
       {currentView === "photoTask" && renderPhotoTaskView()}
+      {currentView === "identifyTask" && renderIdentifyTaskView()}
       {currentView === "specimenDetail" && renderDetailView()}
       {renderConflictPanel()}
     </main>
