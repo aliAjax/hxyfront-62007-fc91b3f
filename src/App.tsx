@@ -161,12 +161,17 @@ function markDuplicates(records: SpecimenRecord[], existingNos: Set<string>): Sp
     }
   });
 
-  return records.map((r) => ({
-    ...r,
-    isDuplicate:
+  return records.map((r) => {
+    const isDuplicate =
       (r.collectionNo && existingNos.has(r.collectionNo)) ||
-      (seenInBatch.get(r.collectionNo) || 0) > 1,
-  }));
+      (seenInBatch.get(r.collectionNo) || 0) > 1;
+
+    return {
+      ...r,
+      isDuplicate,
+      selected: isDuplicate ? false : r.selected,
+    };
+  });
 }
 
 const SAMPLE_DATA = `采集号\t物种名称\t采集地点\t海拔\t采集人\t生境描述
@@ -255,8 +260,9 @@ function App() {
     const total = parsedRecords.length;
     const withMissing = parsedRecords.filter((r) => r.missingFields.length > 0).length;
     const duplicates = parsedRecords.filter((r) => r.isDuplicate).length;
-    const selected = parsedRecords.filter((r) => r.selected).length;
-    return { total, withMissing, duplicates, selected };
+    const importable = parsedRecords.filter((r) => !r.isDuplicate).length;
+    const selected = parsedRecords.filter((r) => r.selected && !r.isDuplicate).length;
+    return { total, withMissing, duplicates, importable, selected };
   }, [parsedRecords]);
 
   const handlePaste = () => {
@@ -301,8 +307,13 @@ function App() {
   };
 
   const toggleSelectAll = () => {
-    const allSelected = parsedRecords.every((r) => r.selected);
-    setParsedRecords((prev) => prev.map((r) => ({ ...r, selected: !allSelected })));
+    const importableRecords = parsedRecords.filter((r) => !r.isDuplicate);
+    const allImportableSelected =
+      importableRecords.length > 0 && importableRecords.every((r) => r.selected);
+
+    setParsedRecords((prev) =>
+      prev.map((r) => (r.isDuplicate ? { ...r, selected: false } : { ...r, selected: !allImportableSelected }))
+    );
   };
 
   const handleImportToQueue = () => {
@@ -474,9 +485,12 @@ function App() {
                         <input
                           type="checkbox"
                           checked={
-                            parsedRecords.length > 0 &&
-                            parsedRecords.every((r) => r.selected)
+                            previewStats.importable > 0 &&
+                            parsedRecords
+                              .filter((r) => !r.isDuplicate)
+                              .every((r) => r.selected)
                           }
+                          disabled={previewStats.importable === 0}
                           onChange={toggleSelectAll}
                         />
                       </th>
@@ -500,7 +514,7 @@ function App() {
                         <td className="col-check">
                           <input
                             type="checkbox"
-                            checked={r.selected}
+                            checked={r.selected && !r.isDuplicate}
                             onChange={() => toggleRecordSelection(r.id)}
                             disabled={r.isDuplicate}
                           />
