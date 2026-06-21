@@ -445,7 +445,114 @@ function getTaskStatusBadgeClass(status: IdentifyTaskStatus): string {
   }
 }
 
-type ViewType = "main" | "photoTask" | "specimenDetail" | "identifyTask";
+type ViewType = "main" | "photoTask" | "specimenDetail" | "identifyTask" | "locationList" | "locationDetail";
+
+interface LocationProfile {
+  name: string;
+  specimenCount: number;
+  altitudeValues: number[];
+  altitudeRange: string;
+  habitatKeywords: string[];
+  specimens: SpecimenRecord[];
+  lastBatch: string;
+  pendingIdentifyCount: number;
+  collectors: string[];
+}
+
+const HABITAT_KEYWORDS_DICT = [
+  "阔叶林", "针叶林", "混交林", "竹林", "灌丛", "草甸", "草原", "荒漠",
+  "湿地", "沼泽", "溪边", "山谷", "山坡", "山顶", "林下", "林缘",
+  "阴湿", "向阳", "湿润", "干燥", "多雾", "岩石", "溪边", "沟谷",
+  "路边", "田埂", "海边", "河岸", "湖泊", "常绿", "落叶"
+];
+
+function parseAltitude(altStr: string): number | null {
+  if (!altStr) return null;
+  const match = altStr.match(/(\d+(?:\.\d+)?)/);
+  if (match) {
+    return parseFloat(match[1]);
+  }
+  return null;
+}
+
+function extractHabitatKeywords(habitat: string): string[] {
+  if (!habitat) return [];
+  const keywords: string[] = [];
+  for (const kw of HABITAT_KEYWORDS_DICT) {
+    if (habitat.includes(kw)) {
+      keywords.push(kw);
+    }
+  }
+  if (keywords.length === 0 && habitat.trim()) {
+    const words = habitat.split(/[，,。.；;、\s]+/).filter(w => w.length >= 2 && w.length <= 6);
+    return words.slice(0, 4);
+  }
+  return keywords.slice(0, 6);
+}
+
+function extractBatchNo(collectionNo: string): string {
+  if (!collectionNo) return "";
+  const match = collectionNo.match(/^(HX-\d{6})/);
+  if (match) return match[1];
+  const match2 = collectionNo.match(/^([A-Z]+-\d+)/);
+  if (match2) return match2[1];
+  return collectionNo.slice(0, Math.min(10, collectionNo.length));
+}
+
+function aggregateLocations(records: SpecimenRecord[]): LocationProfile[] {
+  const locationMap = new Map<string, SpecimenRecord[]>();
+  records.forEach((r) => {
+    const loc = r.collectionLocation?.trim();
+    if (!loc) return;
+    if (!locationMap.has(loc)) {
+      locationMap.set(loc, []);
+    }
+    locationMap.get(loc)!.push(r);
+  });
+
+  const profiles: LocationProfile[] = [];
+  locationMap.forEach((specimens, name) => {
+    const altitudeValues = specimens
+      .map((s) => parseAltitude(s.altitude))
+      .filter((v): v is number => v !== null);
+
+    const minAlt = altitudeValues.length > 0 ? Math.min(...altitudeValues) : null;
+    const maxAlt = altitudeValues.length > 0 ? Math.max(...altitudeValues) : null;
+    let altitudeRange = "—";
+    if (minAlt !== null && maxAlt !== null) {
+      altitudeRange = minAlt === maxAlt ? `${minAlt}m` : `${minAlt}m ~ ${maxAlt}m`;
+    } else if (minAlt !== null) {
+      altitudeRange = `${minAlt}m`;
+    }
+
+    const allHabitats = specimens.map((s) => s.habitat).filter(Boolean).join("，");
+    const habitatKeywords = extractHabitatKeywords(allHabitats);
+
+    const batchSet = specimens.map((s) => extractBatchNo(s.collectionNo)).filter(Boolean);
+    const sortedBatches = [...new Set(batchSet)].sort((a, b) => b.localeCompare(a, "zh"));
+    const lastBatch = sortedBatches[0] || "—";
+
+    const pendingIdentifyCount = specimens.filter(
+      (s) => s.status === "待鉴定" || s.status === "待压制"
+    ).length;
+
+    const collectors = [...new Set(specimens.map((s) => s.collector).filter(Boolean))];
+
+    profiles.push({
+      name,
+      specimenCount: specimens.length,
+      altitudeValues,
+      altitudeRange,
+      habitatKeywords,
+      specimens,
+      lastBatch,
+      pendingIdentifyCount,
+      collectors,
+    });
+  });
+
+  return profiles.sort((a, b) => b.specimenCount - a.specimenCount);
+}
 
 interface ConflictPair {
   oldRecord: SpecimenRecord;
@@ -793,6 +900,9 @@ function App() {
   const [photoTaskFilter, setPhotoTaskFilter] = useState<"all" | "pending" | "done">("all");
   const [tempRemarks, setTempRemarks] = useState<Record<string, string>>({});
   const [selectedPhotoTypes, setSelectedPhotoTypes] = useState<Record<string, string[]>>({});
+  const [selectedLocationName, setSelectedLocationName] = useState<string | null>(null);
+  const [locationSearch, setLocationSearch] = useState<string>("");
+  const [detailFromLocation, setDetailFromLocation] = useState<boolean>(false);
 
   const [showSingleForm, setShowSingleForm] = useState(false);
   const [singleForm, setSingleForm] = useState({
@@ -872,6 +982,45 @@ function App() {
       ).size,
     };
   }, [queue]);
+
+  const locationProfiles = useMemo(() => aggregateLocations(queue), [queue]);
+
+  const filteredLocationProfiles = useMemo(() => {
+    if (!locationSearch.trim()) return locationProfiles;
+    const keyword = locationSearch.trim().toLowerCase();
+    return locationProfiles.filter(
+      (lp) =>
+        lp.name.toLowerCase().includes(keyword) ||
+        lp.habitatKeywords.some((k) => k.toLowerCase().includes(keyword)) ||
+        lp.collectors.some((c) => c.toLowerCase().includes(keyword))
+    );
+  }, [locationProfiles, locationSearch]);
+
+  const selectedLocationProfile = useMemo(() => {
+    if (!selectedLocationName) return null;
+    return locationProfiles.find((lp) => lp.name === selectedLocationName) || null;
+  }, [selectedLocationName, locationProfiles]);
+
+  const handleOpenLocationList = () => {
+    setCurrentView("locationList");
+    setLocationSearch("");
+  };
+
+  const handleOpenLocationDetail = (locationName: string) => {
+    setSelectedLocationName(locationName);
+    setCurrentView("locationDetail");
+  };
+
+  const handleBackToLocationList = () => {
+    setCurrentView("locationList");
+    setDetailSpecimenId(null);
+  };
+
+  const handleOpenSpecimenFromLocation = (specimenId: string) => {
+    setDetailSpecimenId(specimenId);
+    setDetailFromLocation(true);
+    setCurrentView("specimenDetail");
+  };
 
   const photoTaskList = useMemo(() => {
     const list = queue.filter(
@@ -1128,6 +1277,7 @@ function App() {
 
   const handleOpenSpecimenDetail = (id: string) => {
     setDetailSpecimenId(id);
+    setDetailFromLocation(false);
     setCurrentView("specimenDetail");
   };
 
@@ -1768,6 +1918,16 @@ function App() {
                 <small>分组分派标本给鉴定人</small>
               </div>
               <span className="identify-task-count">{identifyTaskMetrics.pending + identifyTaskMetrics.inProgress}</span>
+            </button>
+          </div>
+          <div className="side-task-entry">
+            <button className="location-entry" onClick={handleOpenLocationList}>
+              <span className="location-task-icon">📍</span>
+              <div className="location-task-text">
+                <strong>采集地点档案</strong>
+                <small>查看各采集地点汇总信息</small>
+              </div>
+              <span className="location-task-count">{locationProfiles.length}</span>
             </button>
           </div>
         </aside>
@@ -3109,7 +3269,7 @@ function App() {
         <section className="hero">
           <p className="breadcrumbs">
             <button className="link-btn" onClick={handleBackToPhotoTask}>
-              ← 返回需补照任务
+              ← 返回
             </button>
           </p>
           <h1>标本不存在</h1>
@@ -3118,17 +3278,32 @@ function App() {
     }
     const r = detailSpecimen;
     const isPending = r.status === "需补照" && r.missingPhotoTypes.length > 0;
+    const handleBack = () => {
+      if (detailFromLocation) {
+        handleBackToLocationList();
+      } else {
+        handleBackToPhotoTask();
+      }
+    };
     return (
       <>
         <section className="hero hero-detail">
           <p className="breadcrumbs">
-            <button className="link-btn" onClick={handleBackToPhotoTask}>
-              ← 返回需补照任务
+            <button className="link-btn" onClick={handleBack}>
+              ← {detailFromLocation ? "返回地点详情" : "返回需补照任务"}
             </button>
             <span className="sep">/</span>
             <button className="link-btn" onClick={handleBackToMain}>
               主页
             </button>
+            {detailFromLocation && selectedLocationName && (
+              <>
+                <span className="sep">/</span>
+                <button className="link-btn" onClick={handleBackToLocationList}>
+                  {selectedLocationName}
+                </button>
+              </>
+            )}
             <span className="sep">/</span>
             <span>标本详情</span>
           </p>
@@ -3279,6 +3454,355 @@ function App() {
                     )}
                   </div>
                 </div>
+              ))
+            )}
+          </div>
+        </section>
+      </>
+    );
+  };
+
+  const renderLocationListView = () => (
+    <>
+      <section className="hero hero-location">
+        <p className="breadcrumbs">
+          <button className="link-btn" onClick={handleBackToMain}>
+            ← 返回主页
+          </button>
+          <span className="sep">/</span>
+          <span>采集地点档案</span>
+        </p>
+        <h1>📍 采集地点档案库</h1>
+        <span>汇总所有入库记录中的采集地点信息，包括该地点关联的标本数量、海拔范围、生境关键词、最近采集批次和待鉴定数量，支持按地点筛选和跳转标本详情</span>
+      </section>
+
+      <section className="metrics location-metrics">
+        <article className="metric-locations-total">
+          <small>采集地点总数</small>
+          <strong>{locationProfiles.length}</strong>
+        </article>
+        <article className="metric-specimens-total">
+          <small>关联标本总数</small>
+          <strong>{locationProfiles.reduce((sum, lp) => sum + lp.specimenCount, 0)}</strong>
+        </article>
+        <article className="metric-altitude-cover">
+          <small>覆盖海拔跨度</small>
+          <strong>
+            {(() => {
+              const allAlts = locationProfiles.flatMap((lp) => lp.altitudeValues);
+              if (allAlts.length === 0) return "—";
+              return `${Math.min(...allAlts)}m ~ ${Math.max(...allAlts)}m`;
+            })()}
+          </strong>
+        </article>
+        <article className="metric-pending-locations">
+          <small>有待鉴定地点</small>
+          <strong>{locationProfiles.filter((lp) => lp.pendingIdentifyCount > 0).length}</strong>
+        </article>
+      </section>
+
+      <section className="panel">
+        <div className="heading">
+          <div>
+            <p>地点列表</p>
+            <h2>
+              采集地点档案清单
+              <span className="preview-summary">
+                {locationSearch
+                  ? ` · 搜索 "${locationSearch}"，找到 ${filteredLocationProfiles.length} 个地点`
+                  : ` · 共 ${locationProfiles.length} 个采集地点`}
+              </span>
+            </h2>
+          </div>
+          <div className="location-search-wrap">
+            <input
+              type="text"
+              placeholder="🔍 搜索地点名称、生境关键词或采集人..."
+              value={locationSearch}
+              onChange={(e) => setLocationSearch(e.target.value)}
+              className="location-search-input"
+              style={{ width: "320px" }}
+            />
+          </div>
+        </div>
+
+        {filteredLocationProfiles.length === 0 ? (
+          <div className="empty-state">
+            {locationSearch ? "未找到匹配的采集地点" : "暂无采集地点数据"}
+          </div>
+        ) : (
+          <div className="location-grid">
+            {filteredLocationProfiles.map((lp, index) => (
+              <article
+                key={lp.name}
+                className="location-card"
+                onClick={() => handleOpenLocationDetail(lp.name)}
+              >
+                <div className="location-card-header">
+                  <div className="location-card-index">
+                    <b>{String(index + 1).padStart(2, "0")}</b>
+                  </div>
+                  <div className="location-card-title-wrap">
+                    <h3 className="location-card-title">🌿 {lp.name}</h3>
+                    {lp.pendingIdentifyCount > 0 && (
+                      <span className="pending-badge">
+                        待鉴定 {lp.pendingIdentifyCount} 份
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="location-card-body">
+                  <div className="location-info-grid">
+                    <div className="location-info-item">
+                      <small>标本总数</small>
+                      <p>📦 {lp.specimenCount} 份</p>
+                    </div>
+                    <div className="location-info-item">
+                      <small>海拔范围</small>
+                      <p>⛰️ {lp.altitudeRange}</p>
+                    </div>
+                    <div className="location-info-item">
+                      <small>最近采集批次</small>
+                      <p>📋 {lp.lastBatch}</p>
+                    </div>
+                    <div className="location-info-item">
+                      <small>采集人数</small>
+                      <p>👥 {lp.collectors.length} 人</p>
+                    </div>
+                  </div>
+
+                  {lp.habitatKeywords.length > 0 && (
+                    <div className="location-habitat-section">
+                      <div className="section-label">
+                        <span>生境关键词</span>
+                      </div>
+                      <div className="habitat-chips">
+                        {lp.habitatKeywords.map((kw) => (
+                          <span key={kw} className="habitat-chip">
+                            {kw}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {lp.collectors.length > 0 && (
+                    <div className="location-collectors-section">
+                      <div className="section-label">
+                        <span>采集人</span>
+                      </div>
+                      <div className="collector-chips">
+                        {lp.collectors.slice(0, 4).map((c) => (
+                          <span key={c} className="collector-chip">
+                            👤 {c}
+                          </span>
+                        ))}
+                        {lp.collectors.length > 4 && (
+                          <span className="collector-chip collector-more">
+                            +{lp.collectors.length - 4} 人
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="location-card-footer">
+                  <span className="view-detail-hint">查看详情 →</span>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+    </>
+  );
+
+  const renderLocationDetailView = () => {
+    if (!selectedLocationProfile) {
+      return (
+        <section className="hero hero-location">
+          <p className="breadcrumbs">
+            <button className="link-btn" onClick={handleBackToLocationList}>
+              ← 返回地点列表
+            </button>
+          </p>
+          <h1>地点不存在</h1>
+        </section>
+      );
+    }
+    const lp = selectedLocationProfile;
+    return (
+      <>
+        <section className="hero hero-location">
+          <p className="breadcrumbs">
+            <button className="link-btn" onClick={handleBackToLocationList}>
+              ← 返回地点列表
+            </button>
+            <span className="sep">/</span>
+            <button className="link-btn" onClick={handleBackToMain}>
+              主页
+            </button>
+            <span className="sep">/</span>
+            <span>地点详情</span>
+          </p>
+          <h1>📍 {lp.name}</h1>
+          <span>
+            共采集 {lp.specimenCount} 份标本，海拔范围 {lp.altitudeRange}，
+            {lp.pendingIdentifyCount > 0
+              ? ` ${lp.pendingIdentifyCount} 份待鉴定`
+              : " 全部已完成鉴定"}
+          </span>
+        </section>
+
+        <section className="panel">
+          <div className="heading">
+            <div>
+              <p>地点概览</p>
+              <h2>采集地点综合信息</h2>
+            </div>
+          </div>
+
+          <div className="location-detail-overview">
+            <div className="detail-info-grid location-detail-grid">
+              <div className="detail-info-cell">
+                <small>标本总数</small>
+                <p>📦 {lp.specimenCount} 份</p>
+              </div>
+              <div className="detail-info-cell">
+                <small>海拔范围</small>
+                <p>⛰️ {lp.altitudeRange}</p>
+              </div>
+              <div className="detail-info-cell">
+                <small>最近采集批次</small>
+                <p>📋 {lp.lastBatch}</p>
+              </div>
+              <div className="detail-info-cell">
+                <small>待鉴定数量</small>
+                <p className={lp.pendingIdentifyCount > 0 ? "text-warn" : "text-success"}>
+                  {lp.pendingIdentifyCount > 0
+                    ? `⚠️ ${lp.pendingIdentifyCount} 份待鉴定`
+                    : "✅ 全部完成"}
+                </p>
+              </div>
+            </div>
+
+            {lp.habitatKeywords.length > 0 && (
+              <div className="location-detail-section">
+                <div className="section-title">
+                  <span>🌿 生境关键词</span>
+                  <small>从该地点所有标本的生境描述中自动提取</small>
+                </div>
+                <div className="habitat-chips habitat-chips-lg">
+                  {lp.habitatKeywords.map((kw) => (
+                    <span key={kw} className="habitat-chip habitat-chip-lg">
+                      {kw}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {lp.collectors.length > 0 && (
+              <div className="location-detail-section">
+                <div className="section-title">
+                  <span>👥 采集人员</span>
+                  <small>参与该地点标本采集的所有人员</small>
+                </div>
+                <div className="collector-chips collector-chips-lg">
+                  {lp.collectors.map((c) => (
+                    <span key={c} className="collector-chip collector-chip-lg">
+                      👤 {c}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+
+        <section className="panel">
+          <div className="heading">
+            <div>
+              <p>关联标本</p>
+              <h2>
+                该地点采集的标本清单
+                <span className="preview-summary">
+                  {" "}· 共 {lp.specimens.length} 份标本
+                  {lp.pendingIdentifyCount > 0 && (
+                    <span className="text-warn">
+                      {" "}· {lp.pendingIdentifyCount} 份待鉴定
+                    </span>
+                  )}
+                </span>
+              </h2>
+            </div>
+          </div>
+
+          <div className="records">
+            {lp.specimens.length === 0 ? (
+              <div className="empty-state">暂无关联标本</div>
+            ) : (
+              lp.specimens.map((record, index) => (
+                <article
+                  key={record.id || record.collectionNo + index}
+                  className="location-specimen-card"
+                >
+                  <b>{String(index + 1).padStart(2, "0")}</b>
+                  <div className="record-content">
+                    <div className="record-header">
+                      <h3>{record.collectionNo || "未编号"}</h3>
+                      <div className="record-actions-wrap">
+                        <span className={`status-badge ${getStatusBadgeClass(record.status)}`}>
+                          {record.status}
+                        </span>
+                        <button
+                          className="link-btn specimen-detail-btn"
+                          onClick={() => handleOpenSpecimenFromLocation(record.id)}
+                        >
+                          查看详情 →
+                        </button>
+                      </div>
+                    </div>
+                    <p>
+                      <strong>{record.speciesName || "物种待定"}</strong>
+                      {record.family && (
+                        <span className="family-tag-inline"> · {record.family}</span>
+                      )}
+                      {record.altitude && ` · 海拔${record.altitude.replace(/m$/, "")}m`}
+                      {record.collector && ` · ${record.collector}采集`}
+                    </p>
+                    {record.habitat && (
+                      <p className="record-habitat">生境：{record.habitat}</p>
+                    )}
+                    {(record.storageLocation || record.storagePosition) && (
+                      <p
+                        className="record-storage"
+                        title={
+                          record.storagePosition
+                            ? formatStorageDisplay(record.storagePosition)
+                            : record.storageLocation
+                        }
+                      >
+                        📦 馆藏：
+                        <span className="storage-code-inline">
+                          {record.storagePosition
+                            ? formatStoragePosition(record.storagePosition)
+                            : record.storageLocation}
+                        </span>
+                        {record.storagePosition && (
+                          <span className="storage-detail-inline">
+                            {" "}
+                            {formatStorageDisplay(record.storagePosition)
+                              .replace(/^\d楼 · /, "")
+                              .replace(/ · 格位\d+$/, "")}
+                          </span>
+                        )}
+                      </p>
+                    )}
+                  </div>
+                </article>
               ))
             )}
           </div>
@@ -3486,6 +4010,8 @@ function App() {
       {currentView === "photoTask" && renderPhotoTaskView()}
       {currentView === "identifyTask" && renderIdentifyTaskView()}
       {currentView === "specimenDetail" && renderDetailView()}
+      {currentView === "locationList" && renderLocationListView()}
+      {currentView === "locationDetail" && renderLocationDetailView()}
       {renderConflictPanel()}
     </main>
   );
