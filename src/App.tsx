@@ -816,9 +816,11 @@ function App() {
 
   const handleImportToQueue = () => {
     const selectedRecords = parsedRecords.filter((r) => r.selected);
-    if (selectedRecords.length === 0) return;
+    const duplicateRecords = parsedRecords.filter((r) => r.isDuplicate);
+    if (selectedRecords.length === 0 && duplicateRecords.length === 0) return;
 
-    const conflicts = detectConflicts(selectedRecords, queue);
+    const conflictCandidates = parsedRecords.filter((r) => r.selected || r.isDuplicate);
+    const conflicts = detectConflicts(conflictCandidates, queue);
     if (conflicts.length > 0) {
       setConflictPairs(conflicts);
       setCurrentConflictIndex(0);
@@ -1565,7 +1567,7 @@ function App() {
                   <button
                     className="primary"
                     onClick={handleImportToQueue}
-                    disabled={previewStats.selected === 0}
+                    disabled={previewStats.selected === 0 && previewStats.duplicates === 0}
                   >
                     将选中项加入入库队列 ({previewStats.selected})
                   </button>
