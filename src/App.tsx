@@ -321,6 +321,8 @@ interface ConflictPair {
   newRecord: SpecimenRecord;
   resolved: boolean;
   resolution?: "keep" | "overwrite" | "copy";
+  copySuffix?: string;
+  conflictType: "queue" | "batch";
 }
 
 const CONFLICT_FIELDS = [
@@ -354,6 +356,7 @@ function detectConflicts(
         oldRecord: existing,
         newRecord: r,
         resolved: false,
+        conflictType: "queue",
       });
     }
     const batchPrev = seenInBatch.get(r.collectionNo);
@@ -362,6 +365,7 @@ function detectConflicts(
         oldRecord: batchPrev,
         newRecord: r,
         resolved: false,
+        conflictType: "batch",
       });
     }
     seenInBatch.set(r.collectionNo, r);
@@ -377,6 +381,24 @@ function resolveConflictCopy(record: SpecimenRecord, suffix: string): SpecimenRe
     collectionNo: `${record.collectionNo}${suffix}`,
     isDuplicate: false,
   };
+}
+
+function generateUniqueCopySuffix(
+  baseNo: string,
+  existingNos: Set<string>,
+  defaultSuffix: string,
+  usedSuffixes?: Set<string>
+): string {
+  const match = defaultSuffix.match(/^(.*?)(\d+)$/);
+  const prefix = match ? match[1] : defaultSuffix;
+  let counter = match ? parseInt(match[2], 10) : 1;
+
+  let suffix = defaultSuffix;
+  while (existingNos.has(`${baseNo}${suffix}`) || usedSuffixes?.has(suffix)) {
+    counter++;
+    suffix = `${prefix}${counter}`;
+  }
+  return suffix;
 }
 
 function resolveConflictOverwrite(
@@ -984,9 +1006,11 @@ function App() {
 
   const handleConflictCopy = () => {
     setConflictPairs((prev) =>
-      prev.map((pair, idx) =>
-        idx === currentConflictIndex ? { ...pair, resolved: true, resolution: "copy" } : pair
-      )
+      prev.map((pair, idx) => {
+        if (idx !== currentConflictIndex) return pair;
+        const existingSuffix = pair.copySuffix || conflictCopySuffix;
+        return { ...pair, resolved: true, resolution: "copy", copySuffix: existingSuffix };
+      })
     );
     if (currentConflictIndex < conflictPairs.length - 1) {
       setCurrentConflictIndex((prev) => prev + 1);
@@ -1012,51 +1036,117 @@ function App() {
 
   const applyBatchConflictResolutions = () => {
     let updatedQueue = [...queue];
-    const resolvedNewIds = new Set<string>();
+    const updatedParsed = [...parsedRecords];
+    const skipIds = new Set<string>();
     const newRecordsToAdd: SpecimenRecord[] = [];
+    const existingNosForCopy = new Set(updatedQueue.map((r) => r.collectionNo).filter(Boolean));
+    const usedSuffixesByBaseNo: Record<string, Set<string>> = {};
+    const batchConflictOldIds = new Set<string>();
+
+    const updateRecordInList = (list: SpecimenRecord[], id: string, updater: (r: SpecimenRecord) => SpecimenRecord) => {
+      const idx = list.findIndex((r) => r.id === id);
+      if (idx !== -1) {
+        list[idx] = updater(list[idx]);
+        return true;
+      }
+      return false;
+    };
 
     conflictPairs.forEach((pair) => {
       if (!pair.resolved) return;
 
       const oldId = pair.oldRecord.id;
       const newId = pair.newRecord.id;
+      const baseNo = pair.newRecord.collectionNo;
+      const isBatchConflict = pair.conflictType === "batch";
 
       if (pair.resolution === "overwrite") {
-        const updated = resolveConflictOverwrite(pair.oldRecord, pair.newRecord);
-        const queueIdx = updatedQueue.findIndex((r) => r.id === oldId);
-        if (queueIdx !== -1) {
-          updatedQueue[queueIdx] = updated;
+        const applyOverwrite = (target: SpecimenRecord) => ({
+          ...resolveConflictOverwrite(target, pair.newRecord),
+          isDuplicate: false,
+          selected: isBatchConflict ? true : target.selected,
+        });
+        updateRecordInList(updatedQueue, oldId, applyOverwrite);
+        updateRecordInList(updatedParsed, oldId, applyOverwrite);
+        if (isBatchConflict) {
+          batchConflictOldIds.add(oldId);
         }
-        resolvedNewIds.add(newId);
+        skipIds.add(newId);
       } else if (pair.resolution === "keep") {
-        resolvedNewIds.add(newId);
+        const applyKeep = (target: SpecimenRecord) => ({
+          ...target,
+          isDuplicate: false,
+          selected: isBatchConflict ? true : target.selected,
+        });
+        updateRecordInList(updatedQueue, oldId, applyKeep);
+        updateRecordInList(updatedParsed, oldId, applyKeep);
+        if (isBatchConflict) {
+          batchConflictOldIds.add(oldId);
+        }
+        skipIds.add(newId);
       } else if (pair.resolution === "copy") {
-        const copyRecord = resolveConflictCopy(pair.newRecord, conflictCopySuffix);
+        const usedSet = usedSuffixesByBaseNo[baseNo] || new Set<string>();
+        const defaultSuffix = pair.copySuffix || conflictCopySuffix;
+        const uniqueSuffix = generateUniqueCopySuffix(baseNo, existingNosForCopy, defaultSuffix, usedSet);
+        usedSet.add(uniqueSuffix);
+        usedSuffixesByBaseNo[baseNo] = usedSet;
+
+        const copyRecord = resolveConflictCopy(pair.newRecord, uniqueSuffix);
         const pos = previewPositions[pair.newRecord.id];
         if (pos) {
           copyRecord.storagePosition = { ...pos };
           copyRecord.storageLocation = formatStoragePosition(pos);
         }
+        copyRecord.selected = false;
+        copyRecord.isDuplicate = false;
         newRecordsToAdd.push(copyRecord);
-        resolvedNewIds.add(newId);
+        existingNosForCopy.add(copyRecord.collectionNo);
+        skipIds.add(newId);
+
+        const applyKeepOld = (target: SpecimenRecord) => ({
+          ...target,
+          isDuplicate: false,
+          selected: isBatchConflict ? true : target.selected,
+        });
+        updateRecordInList(updatedQueue, oldId, applyKeepOld);
+        updateRecordInList(updatedParsed, oldId, applyKeepOld);
+        if (isBatchConflict) {
+          batchConflictOldIds.add(oldId);
+        }
       }
     });
 
-    const remainingParsed = parsedRecords.filter((r) => !resolvedNewIds.has(r.id));
-    const toImport = remainingParsed
-      .filter((r) => r.selected && !r.isDuplicate)
+    const batchConflictRecords = updatedParsed.filter(
+      (r) => batchConflictOldIds.has(r.id) && !skipIds.has(r.id)
+    );
+
+    const selectedRecordsToImport = updatedParsed
+      .filter((r) => r.selected && !skipIds.has(r.id) && !batchConflictOldIds.has(r.id))
       .map((r) => {
         const pos = previewPositions[r.id];
         const storageFormatted = pos ? formatStoragePosition(pos) : "";
         return {
           ...r,
           selected: false,
+          isDuplicate: false,
           storageLocation: storageFormatted,
           storagePosition: storageFormatted ? { ...pos } : undefined,
         };
       });
 
-    setQueue([...newRecordsToAdd, ...toImport, ...updatedQueue]);
+    const batchConflictFormatted = batchConflictRecords.map((r) => {
+      const pos = previewPositions[r.id];
+      const storageFormatted = pos ? formatStoragePosition(pos) : "";
+      return {
+        ...r,
+        selected: false,
+        isDuplicate: false,
+        storageLocation: storageFormatted,
+        storagePosition: storageFormatted ? { ...pos } : undefined,
+      };
+    });
+
+    setQueue([...newRecordsToAdd, ...batchConflictFormatted, ...selectedRecordsToImport, ...updatedQueue]);
     setParsedRecords([]);
     setRawInput("");
     setShowPreview(false);
@@ -1073,11 +1163,17 @@ function App() {
       const updated = resolveConflictOverwrite(pair.oldRecord, pair.newRecord);
       setQueue((prev) => prev.map((r) => (r.id === pair.oldRecord.id ? updated : r)));
     } else if (pair.resolution === "copy") {
-      const copyRecord = resolveConflictCopy(pair.newRecord, conflictCopySuffix);
+      const baseNo = pair.newRecord.collectionNo;
+      const existingNos = new Set(queue.map((r) => r.collectionNo).filter(Boolean));
+      const defaultSuffix = pair.copySuffix || conflictCopySuffix;
+      const uniqueSuffix = generateUniqueCopySuffix(baseNo, existingNos, defaultSuffix);
+      const copyRecord = resolveConflictCopy(pair.newRecord, uniqueSuffix);
       const storageFormatted = formatStoragePosition(singlePosition);
       copyRecord.storageLocation = storageFormatted;
       copyRecord.storagePosition = storageFormatted ? { ...singlePosition } : undefined;
+      copyRecord.isDuplicate = false;
       setQueue((prev) => [copyRecord, ...prev]);
+    } else if (pair.resolution === "keep") {
     }
 
     setSingleForm({
@@ -2413,14 +2509,23 @@ function App() {
                     <span>后缀名</span>
                     <input
                       type="text"
-                      value={conflictCopySuffix}
-                      onChange={(e) => setConflictCopySuffix(e.target.value)}
+                      value={currentConflict.copySuffix || conflictCopySuffix}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setConflictPairs((prev) =>
+                          prev.map((pair, idx) =>
+                            idx === currentConflictIndex
+                              ? { ...pair, copySuffix: val }
+                              : pair
+                          )
+                        );
+                      }}
                       placeholder="-副本1"
                     />
                   </label>
                   <span className="copy-preview">
                     预览：{newRecord.collectionNo}
-                    {conflictCopySuffix}
+                    {currentConflict.copySuffix || conflictCopySuffix}
                   </span>
                 </div>
               </div>
