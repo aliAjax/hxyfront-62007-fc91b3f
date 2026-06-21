@@ -10,6 +10,13 @@ interface PhotoRecord {
   remark?: string;
 }
 
+interface StoragePosition {
+  floor: string;
+  cabinet: string;
+  shelf: string;
+  slot: string;
+}
+
 interface SpecimenRecord {
   id: string;
   collectionNo: string;
@@ -20,6 +27,7 @@ interface SpecimenRecord {
   habitat: string;
   status: "待压制" | "待鉴定" | "已入库" | "需补照";
   storageLocation: string;
+  storagePosition?: StoragePosition;
   pressStatus: string;
   identifyStatus: string;
   missingFields: string[];
@@ -31,6 +39,104 @@ interface SpecimenRecord {
 }
 
 const PHOTO_TYPES = ["标本整体照", "标签特写", "叶片正面", "叶片背面", "花果特写", "生境照"];
+
+interface CabinetInfo {
+  code: string;
+  name: string;
+  shelves: number;
+  slotsPerShelf: number;
+}
+
+const STORAGE_DATA: Record<string, CabinetInfo[]> = {
+  "1F": [
+    { code: "A", name: "种子植物柜A", shelves: 6, slotsPerShelf: 12 },
+    { code: "B", name: "种子植物柜B", shelves: 6, slotsPerShelf: 12 },
+    { code: "C", name: "蕨类植物柜", shelves: 5, slotsPerShelf: 10 },
+    { code: "D", name: "苔藓植物柜", shelves: 4, slotsPerShelf: 8 },
+  ],
+  "2F": [
+    { code: "A", name: "木本植物柜A", shelves: 6, slotsPerShelf: 12 },
+    { code: "B", name: "木本植物柜B", shelves: 6, slotsPerShelf: 12 },
+    { code: "C", name: "草本植物柜C", shelves: 6, slotsPerShelf: 12 },
+    { code: "D", name: "草本植物柜D", shelves: 6, slotsPerShelf: 12 },
+    { code: "E", name: "模式标本柜", shelves: 5, slotsPerShelf: 8 },
+  ],
+  "3F": [
+    { code: "A", name: "珍贵标本柜A", shelves: 5, slotsPerShelf: 8 },
+    { code: "B", name: "珍贵标本柜B", shelves: 5, slotsPerShelf: 8 },
+    { code: "C", name: "外调标本柜", shelves: 6, slotsPerShelf: 10 },
+    { code: "D", name: "待整理柜", shelves: 6, slotsPerShelf: 12 },
+  ],
+};
+
+const FLOOR_OPTIONS = [
+  { value: "1F", label: "1楼 · 蕨类/苔藓区" },
+  { value: "2F", label: "2楼 · 种子植物区" },
+  { value: "3F", label: "3楼 · 珍贵/外调区" },
+];
+
+const EMPTY_POSITION: StoragePosition = {
+  floor: "",
+  cabinet: "",
+  shelf: "",
+  slot: "",
+};
+
+function formatStoragePosition(pos: StoragePosition): string {
+  if (!pos.floor || !pos.cabinet || !pos.shelf || !pos.slot) {
+    return "";
+  }
+  return `${pos.floor}-${pos.cabinet}${pos.shelf}-${pos.slot}`;
+}
+
+function formatStorageDisplay(pos: StoragePosition): string {
+  if (!pos.floor || !pos.cabinet || !pos.shelf || !pos.slot) {
+    return "";
+  }
+  const floorLabel = pos.floor.replace("F", "楼");
+  const cabinetInfo = STORAGE_DATA[pos.floor]?.find((c) => c.code === pos.cabinet);
+  const cabinetName = cabinetInfo ? `（${cabinetInfo.name}）` : "";
+  return `${floorLabel} · ${pos.cabinet}柜${cabinetName} · 第${pos.shelf}层 · 格位${pos.slot}`;
+}
+
+function parseStorageLocation(location: string): StoragePosition | undefined {
+  if (!location) return undefined;
+  const match = location.match(/^(\dF)-([A-Z])(\d{1,2})-(\d{1,2})$/);
+  if (match) {
+    return {
+      floor: match[1],
+      cabinet: match[2],
+      shelf: match[3],
+      slot: match[4],
+    };
+  }
+  return undefined;
+}
+
+function getCabinetOptions(floor: string) {
+  if (!floor) return [];
+  return STORAGE_DATA[floor] || [];
+}
+
+function getShelfOptions(floor: string, cabinet: string) {
+  if (!floor || !cabinet) return [];
+  const info = STORAGE_DATA[floor]?.find((c) => c.code === cabinet);
+  if (!info) return [];
+  return Array.from({ length: info.shelves }, (_, i) => ({
+    value: String(i + 1).padStart(2, "0"),
+    label: `第${i + 1}层`,
+  }));
+}
+
+function getSlotOptions(floor: string, cabinet: string, shelf: string) {
+  if (!floor || !cabinet || !shelf) return [];
+  const info = STORAGE_DATA[floor]?.find((c) => c.code === cabinet);
+  if (!info) return [];
+  return Array.from({ length: info.slotsPerShelf }, (_, i) => ({
+    value: String(i + 1).padStart(2, "0"),
+    label: `格位 ${String(i + 1).padStart(2, "0")}`,
+  }));
+}
 
 const project = {
   sourceNo: 9,
@@ -261,7 +367,8 @@ function App() {
       collector: "赵磊",
       habitat: "山坡草地",
       status: "已入库",
-      storageLocation: "柜位B-12-04",
+      storageLocation: "2F-B12-04",
+      storagePosition: { floor: "2F", cabinet: "B", shelf: "12", slot: "04" },
       pressStatus: "已压制",
       identifyStatus: "已鉴定",
       missingFields: [],
@@ -280,7 +387,8 @@ function App() {
       collector: "陈志强",
       habitat: "山谷溪边常绿阔叶林",
       status: "需补照",
-      storageLocation: "柜位A-03-11",
+      storageLocation: "2F-A03-11",
+      storagePosition: { floor: "2F", cabinet: "A", shelf: "03", slot: "11" },
       pressStatus: "已压制",
       identifyStatus: "已鉴定",
       missingFields: [],
@@ -308,7 +416,8 @@ function App() {
       collector: "王雪婷",
       habitat: "林缘灌丛，阳光充足",
       status: "需补照",
-      storageLocation: "柜位C-07-02",
+      storageLocation: "1F-C07-02",
+      storagePosition: { floor: "1F", cabinet: "C", shelf: "07", slot: "02" },
       pressStatus: "已压制",
       identifyStatus: "已鉴定",
       missingFields: [],
@@ -336,7 +445,8 @@ function App() {
       collector: "刘海洋",
       habitat: "向阳山坡杂木林",
       status: "需补照",
-      storageLocation: "柜位B-05-18",
+      storageLocation: "2F-B05-18",
+      storagePosition: { floor: "2F", cabinet: "B", shelf: "05", slot: "18" },
       pressStatus: "已压制",
       identifyStatus: "已鉴定",
       missingFields: [],
@@ -372,6 +482,20 @@ function App() {
   const [photoTaskFilter, setPhotoTaskFilter] = useState<"all" | "pending" | "done">("all");
   const [tempRemarks, setTempRemarks] = useState<Record<string, string>>({});
   const [selectedPhotoTypes, setSelectedPhotoTypes] = useState<Record<string, string[]>>({});
+
+  const [showSingleForm, setShowSingleForm] = useState(false);
+  const [singleForm, setSingleForm] = useState({
+    collectionNo: "",
+    speciesName: "",
+    collectionLocation: "",
+    altitude: "",
+    collector: "",
+    habitat: "",
+  });
+  const [singlePosition, setSinglePosition] = useState<StoragePosition>({ ...EMPTY_POSITION });
+
+  const [previewPositions, setPreviewPositions] = useState<Record<string, StoragePosition>>({});
+  const [batchPosition, setBatchPosition] = useState<StoragePosition>({ ...EMPTY_POSITION });
 
   const existingCollectionNos = useMemo(() => {
     return new Set(queue.map((r) => r.collectionNo).filter(Boolean));
@@ -585,18 +709,143 @@ function App() {
   const handleImportToQueue = () => {
     const toImport = parsedRecords
       .filter((r) => r.selected && !r.isDuplicate)
-      .map((r) => ({ ...r, selected: false }));
+      .map((r) => {
+        const pos = previewPositions[r.id];
+        const storageFormatted = pos ? formatStoragePosition(pos) : "";
+        return {
+          ...r,
+          selected: false,
+          storageLocation: storageFormatted,
+          storagePosition: storageFormatted ? { ...pos } : undefined,
+        };
+      });
     if (toImport.length === 0) return;
     setQueue((prev) => [...toImport, ...prev]);
     setParsedRecords([]);
     setRawInput("");
     setShowPreview(false);
+    setPreviewPositions({});
+    setBatchPosition({ ...EMPTY_POSITION });
   };
 
   const handleClearPreview = () => {
     setParsedRecords([]);
     setRawInput("");
     setShowPreview(false);
+    setPreviewPositions({});
+    setBatchPosition({ ...EMPTY_POSITION });
+  };
+
+  const handlePositionChange = (
+    setter: React.Dispatch<React.SetStateAction<StoragePosition>>,
+    field: keyof StoragePosition,
+    value: string
+  ) => {
+    setter((prev) => {
+      const next = { ...prev, [field]: value };
+      if (field === "floor") {
+        next.cabinet = "";
+        next.shelf = "";
+        next.slot = "";
+      } else if (field === "cabinet") {
+        next.shelf = "";
+        next.slot = "";
+      } else if (field === "shelf") {
+        next.slot = "";
+      }
+      return next;
+    });
+  };
+
+  const handlePreviewPositionChange = (
+    recordId: string,
+    field: keyof StoragePosition,
+    value: string
+  ) => {
+    setPreviewPositions((prev) => {
+      const current = prev[recordId] || { ...EMPTY_POSITION };
+      const next = { ...current, [field]: value };
+      if (field === "floor") {
+        next.cabinet = "";
+        next.shelf = "";
+        next.slot = "";
+      } else if (field === "cabinet") {
+        next.shelf = "";
+        next.slot = "";
+      } else if (field === "shelf") {
+        next.slot = "";
+      }
+      return { ...prev, [recordId]: next };
+    });
+  };
+
+  const applyBatchPosition = () => {
+    if (!batchPosition.floor || !batchPosition.cabinet || !batchPosition.shelf || !batchPosition.slot) {
+      return;
+    }
+    const updates: Record<string, StoragePosition> = {};
+    parsedRecords.forEach((r) => {
+      if (r.selected && !r.isDuplicate) {
+        updates[r.id] = { ...batchPosition };
+      }
+    });
+    setPreviewPositions((prev) => ({ ...prev, ...updates }));
+  };
+
+  const handleSingleFormChange = (field: string, value: string) => {
+    setSingleForm((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const handleSubmitSingle = () => {
+    const missingFields: string[] = [];
+    REQUIRED_FIELDS.forEach(({ key, label }) => {
+      if (!singleForm[key as keyof typeof singleForm]) {
+        missingFields.push(label);
+      }
+    });
+
+    const storageFormatted = formatStoragePosition(singlePosition);
+
+    const newRecord: SpecimenRecord = {
+      id: generateId(),
+      collectionNo: singleForm.collectionNo,
+      speciesName: singleForm.speciesName,
+      collectionLocation: singleForm.collectionLocation,
+      altitude: singleForm.altitude,
+      collector: singleForm.collector,
+      habitat: singleForm.habitat,
+      status: "待压制",
+      storageLocation: storageFormatted,
+      storagePosition: storageFormatted ? { ...singlePosition } : undefined,
+      pressStatus: "待压制",
+      identifyStatus: "待鉴定",
+      missingFields,
+      isDuplicate: singleForm.collectionNo
+        ? existingCollectionNos.has(singleForm.collectionNo)
+        : false,
+      selected: false,
+      missingPhotoTypes: [],
+      photoRecords: [],
+      photoRemark: "",
+    };
+
+    setQueue((prev) => [newRecord, ...prev]);
+    setSingleForm({
+      collectionNo: "",
+      speciesName: "",
+      collectionLocation: "",
+      altitude: "",
+      collector: "",
+      habitat: "",
+    });
+    setSinglePosition({ ...EMPTY_POSITION });
+    setShowSingleForm(false);
+  };
+
+  const isSingleFormValid = () => {
+    return REQUIRED_FIELDS.some(
+      ({ key }) => singleForm[key as keyof typeof singleForm]
+    );
   };
 
   const getStatusBadgeClass = (status: string) => {
@@ -729,6 +978,191 @@ function App() {
             </div>
           </div>
 
+          <div className="single-entry-toggle">
+            <button
+              className={showSingleForm ? "btn-outline-active" : ""}
+              onClick={() => setShowSingleForm(!showSingleForm)}
+            >
+              {showSingleForm ? "收起单条录入 ▲" : "单条录入标本 ▼"}
+            </button>
+          </div>
+
+          {showSingleForm && (
+            <div className="single-entry-form">
+              <div className="heading sub-heading">
+                <div>
+                  <p>单份录入</p>
+                  <h2>新增标本记录</h2>
+                </div>
+              </div>
+              <div className="field-grid">
+                <label>
+                  <span>采集号 *</span>
+                  <input
+                    type="text"
+                    placeholder="如：HX-240620-001"
+                    value={singleForm.collectionNo}
+                    onChange={(e) => handleSingleFormChange("collectionNo", e.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>物种名称 *</span>
+                  <input
+                    type="text"
+                    placeholder="如：Acer palmatum 或 鸡爪槭"
+                    value={singleForm.speciesName}
+                    onChange={(e) => handleSingleFormChange("speciesName", e.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>采集地点 *</span>
+                  <input
+                    type="text"
+                    placeholder="如：浙江天目山国家级自然保护区"
+                    value={singleForm.collectionLocation}
+                    onChange={(e) => handleSingleFormChange("collectionLocation", e.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>海拔 *</span>
+                  <input
+                    type="text"
+                    placeholder="如：1280m"
+                    value={singleForm.altitude}
+                    onChange={(e) => handleSingleFormChange("altitude", e.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>采集人 *</span>
+                  <input
+                    type="text"
+                    placeholder="如：李明阳"
+                    value={singleForm.collector}
+                    onChange={(e) => handleSingleFormChange("collector", e.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>生境描述 *</span>
+                  <input
+                    type="text"
+                    placeholder="如：山坡阔叶林中，土壤湿润"
+                    value={singleForm.habitat}
+                    onChange={(e) => handleSingleFormChange("habitat", e.target.value)}
+                  />
+                </label>
+              </div>
+
+              <div className="storage-section">
+                <div className="section-title">
+                  <span>📦 馆藏柜位选择</span>
+                  <small>从下拉列表中依次选择楼层、柜号、层板和格位</small>
+                </div>
+                <div className="storage-selector">
+                  <label className="storage-field">
+                    <span>楼层</span>
+                    <select
+                      value={singlePosition.floor}
+                      onChange={(e) =>
+                        handlePositionChange(setSinglePosition, "floor", e.target.value)
+                      }
+                      className="storage-select"
+                    >
+                      <option value="">-- 请选择楼层 --</option>
+                      {FLOOR_OPTIONS.map((f) => (
+                        <option key={f.value} value={f.value}>
+                          {f.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="storage-field">
+                    <span>柜号</span>
+                    <select
+                      value={singlePosition.cabinet}
+                      onChange={(e) =>
+                        handlePositionChange(setSinglePosition, "cabinet", e.target.value)
+                      }
+                      className="storage-select"
+                      disabled={!singlePosition.floor}
+                    >
+                      <option value="">-- 先选楼层 --</option>
+                      {getCabinetOptions(singlePosition.floor).map((c) => (
+                        <option key={c.code} value={c.code}>
+                          {c.code}柜 · {c.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="storage-field">
+                    <span>层板</span>
+                    <select
+                      value={singlePosition.shelf}
+                      onChange={(e) =>
+                        handlePositionChange(setSinglePosition, "shelf", e.target.value)
+                      }
+                      className="storage-select"
+                      disabled={!singlePosition.cabinet}
+                    >
+                      <option value="">-- 先选柜号 --</option>
+                      {getShelfOptions(singlePosition.floor, singlePosition.cabinet).map((s) => (
+                        <option key={s.value} value={s.value}>
+                          {s.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="storage-field">
+                    <span>格位</span>
+                    <select
+                      value={singlePosition.slot}
+                      onChange={(e) =>
+                        handlePositionChange(setSinglePosition, "slot", e.target.value)
+                      }
+                      className="storage-select"
+                      disabled={!singlePosition.shelf}
+                    >
+                      <option value="">-- 先选层板 --</option>
+                      {getSlotOptions(singlePosition.floor, singlePosition.cabinet, singlePosition.shelf).map((s) => (
+                        <option key={s.value} value={s.value}>
+                          {s.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                {formatStorageDisplay(singlePosition) && (
+                  <div className="storage-result">
+                    <span className="storage-code">编号：{formatStoragePosition(singlePosition)}</span>
+                    <span className="storage-detail">{formatStorageDisplay(singlePosition)}</span>
+                  </div>
+                )}
+              </div>
+
+              <div className="single-entry-actions">
+                <button className="ghost-btn" onClick={() => {
+                  setSingleForm({
+                    collectionNo: "",
+                    speciesName: "",
+                    collectionLocation: "",
+                    altitude: "",
+                    collector: "",
+                    habitat: "",
+                  });
+                  setSinglePosition({ ...EMPTY_POSITION });
+                }}>
+                  清空表单
+                </button>
+                <button
+                  className="primary"
+                  onClick={handleSubmitSingle}
+                  disabled={!isSingleFormValid()}
+                >
+                  加入入库队列
+                </button>
+              </div>
+            </div>
+          )}
+
           {showPreview && parsedRecords.length > 0 && (
             <div className="preview-section">
               <div className="heading">
@@ -763,8 +1197,107 @@ function App() {
                 </div>
               </div>
 
+              <div className="batch-storage-bar">
+                <div className="section-title inline-title">
+                  <span>📦 批量柜位分配</span>
+                  <small>为所有已选记录快速指定馆藏位置，也可逐行单独设置</small>
+                </div>
+                <div className="storage-selector batch-selector">
+                  <label className="storage-field">
+                    <span>楼层</span>
+                    <select
+                      value={batchPosition.floor}
+                      onChange={(e) =>
+                        handlePositionChange(setBatchPosition, "floor", e.target.value)
+                      }
+                      className="storage-select"
+                    >
+                      <option value="">-- 楼层 --</option>
+                      {FLOOR_OPTIONS.map((f) => (
+                        <option key={f.value} value={f.value}>
+                          {f.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="storage-field">
+                    <span>柜号</span>
+                    <select
+                      value={batchPosition.cabinet}
+                      onChange={(e) =>
+                        handlePositionChange(setBatchPosition, "cabinet", e.target.value)
+                      }
+                      className="storage-select"
+                      disabled={!batchPosition.floor}
+                    >
+                      <option value="">-- 柜号 --</option>
+                      {getCabinetOptions(batchPosition.floor).map((c) => (
+                        <option key={c.code} value={c.code}>
+                          {c.code}柜
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="storage-field">
+                    <span>层板</span>
+                    <select
+                      value={batchPosition.shelf}
+                      onChange={(e) =>
+                        handlePositionChange(setBatchPosition, "shelf", e.target.value)
+                      }
+                      className="storage-select"
+                      disabled={!batchPosition.cabinet}
+                    >
+                      <option value="">-- 层板 --</option>
+                      {getShelfOptions(batchPosition.floor, batchPosition.cabinet).map((s) => (
+                        <option key={s.value} value={s.value}>
+                          {s.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="storage-field">
+                    <span>格位</span>
+                    <select
+                      value={batchPosition.slot}
+                      onChange={(e) =>
+                        handlePositionChange(setBatchPosition, "slot", e.target.value)
+                      }
+                      className="storage-select"
+                      disabled={!batchPosition.shelf}
+                    >
+                      <option value="">-- 格位 --</option>
+                      {getSlotOptions(batchPosition.floor, batchPosition.cabinet, batchPosition.shelf).map((s) => (
+                        <option key={s.value} value={s.value}>
+                          {s.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    className="primary btn-small"
+                    onClick={applyBatchPosition}
+                    disabled={
+                      !batchPosition.floor ||
+                      !batchPosition.cabinet ||
+                      !batchPosition.shelf ||
+                      !batchPosition.slot ||
+                      previewStats.selected === 0
+                    }
+                  >
+                    应用到选中 ({previewStats.selected})
+                  </button>
+                </div>
+                {formatStorageDisplay(batchPosition) && (
+                  <div className="storage-result batch-result">
+                    <span className="storage-code">批量柜位：{formatStoragePosition(batchPosition)}</span>
+                    <span className="storage-detail">{formatStorageDisplay(batchPosition)}</span>
+                  </div>
+                )}
+              </div>
+
               <div className="preview-table-wrapper">
-                <table className="preview-table">
+                <table className="preview-table preview-table-wide">
                   <thead>
                     <tr>
                       <th className="col-check">
@@ -786,11 +1319,15 @@ function App() {
                       <th>海拔</th>
                       <th>采集人</th>
                       <th>生境描述</th>
+                      <th className="col-storage">馆藏柜位</th>
                       <th>状态</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {parsedRecords.map((r) => (
+                    {parsedRecords.map((r) => {
+                      const rowPos = previewPositions[r.id] || { ...EMPTY_POSITION };
+                      const rowStorageDisplay = formatStorageDisplay(rowPos);
+                      return (
                       <tr
                         key={r.id}
                         className={`preview-row ${
@@ -842,6 +1379,73 @@ function App() {
                             {r.habitat || <em>未填写</em>}
                           </span>
                         </td>
+                        <td className="col-storage">
+                          {r.isDuplicate ? (
+                            <span className="cell-missing"><em>—</em></span>
+                          ) : rowStorageDisplay ? (
+                            <div className="inline-storage">
+                              <span className="inline-storage-code">{formatStoragePosition(rowPos)}</span>
+                              <span className="inline-storage-detail">{rowStorageDisplay}</span>
+                            </div>
+                          ) : (
+                            <div className="row-storage-selector">
+                              <div className="mini-storage-selects">
+                                <select
+                                  value={rowPos.floor}
+                                  onChange={(e) =>
+                                    handlePreviewPositionChange(r.id, "floor", e.target.value)
+                                  }
+                                  className="mini-select"
+                                  disabled={!r.selected}
+                                >
+                                  <option value="">楼层</option>
+                                  {FLOOR_OPTIONS.map((f) => (
+                                    <option key={f.value} value={f.value}>{f.value}</option>
+                                  ))}
+                                </select>
+                                <select
+                                  value={rowPos.cabinet}
+                                  onChange={(e) =>
+                                    handlePreviewPositionChange(r.id, "cabinet", e.target.value)
+                                  }
+                                  className="mini-select"
+                                  disabled={!rowPos.floor || !r.selected}
+                                >
+                                  <option value="">柜</option>
+                                  {getCabinetOptions(rowPos.floor).map((c) => (
+                                    <option key={c.code} value={c.code}>{c.code}</option>
+                                  ))}
+                                </select>
+                                <select
+                                  value={rowPos.shelf}
+                                  onChange={(e) =>
+                                    handlePreviewPositionChange(r.id, "shelf", e.target.value)
+                                  }
+                                  className="mini-select"
+                                  disabled={!rowPos.cabinet || !r.selected}
+                                >
+                                  <option value="">层</option>
+                                  {getShelfOptions(rowPos.floor, rowPos.cabinet).map((s) => (
+                                    <option key={s.value} value={s.value}>{s.value}</option>
+                                  ))}
+                                </select>
+                                <select
+                                  value={rowPos.slot}
+                                  onChange={(e) =>
+                                    handlePreviewPositionChange(r.id, "slot", e.target.value)
+                                  }
+                                  className="mini-select"
+                                  disabled={!rowPos.shelf || !r.selected}
+                                >
+                                  <option value="">格</option>
+                                  {getSlotOptions(rowPos.floor, rowPos.cabinet, rowPos.shelf).map((s) => (
+                                    <option key={s.value} value={s.value}>{s.value}</option>
+                                  ))}
+                                </select>
+                              </div>
+                            </div>
+                          )}
+                        </td>
                         <td>
                           {r.missingFields.length > 0 ? (
                             <span className="missing-tip" title={r.missingFields.join("、")}>
@@ -854,7 +1458,7 @@ function App() {
                           )}
                         </td>
                       </tr>
-                    ))}
+                    );})}
                   </tbody>
                 </table>
               </div>
@@ -908,8 +1512,18 @@ function App() {
                   {record.habitat && (
                     <p className="record-habitat">生境：{record.habitat}</p>
                   )}
-                  {record.storageLocation && (
-                    <p className="record-storage">馆藏：{record.storageLocation}</p>
+                  {(record.storageLocation || record.storagePosition) && (
+                    <p className="record-storage" title={record.storagePosition ? formatStorageDisplay(record.storagePosition) : record.storageLocation}>
+                      📦 馆藏：
+                      <span className="storage-code-inline">
+                        {record.storagePosition ? formatStoragePosition(record.storagePosition) : record.storageLocation}
+                      </span>
+                      {record.storagePosition && (
+                        <span className="storage-detail-inline">
+                          {" "}{formatStorageDisplay(record.storagePosition).replace(/^\d楼 · /, "").replace(/ · 格位\d+$/, "")}
+                        </span>
+                      )}
+                    </p>
                   )}
                 </div>
               </article>
@@ -1033,9 +1647,14 @@ function App() {
                     <div className="task-info-grid">
                       <div className="task-info-item">
                         <small>馆藏位置</small>
-                        <p className="storage-loc">
-                          📦 {record.storageLocation || "未分配"}
+                        <p className="storage-loc" title={record.storagePosition ? formatStorageDisplay(record.storagePosition) : ""}>
+                          📦 {record.storagePosition ? formatStoragePosition(record.storagePosition) : (record.storageLocation || "未分配")}
                         </p>
+                        {record.storagePosition && (
+                          <small className="storage-subdetail">
+                            {formatStorageDisplay(record.storagePosition)}
+                          </small>
+                        )}
                       </div>
                       <div className="task-info-item">
                         <small>采集地点</small>
@@ -1227,7 +1846,12 @@ function App() {
             </div>
             <div className="detail-info-cell">
               <small>馆藏位置</small>
-              <p>📦 {r.storageLocation || "未分配"}</p>
+              <p>📦 {r.storagePosition ? formatStoragePosition(r.storagePosition) : (r.storageLocation || "未分配")}</p>
+              {r.storagePosition && (
+                <small className="storage-subdetail">
+                  {formatStorageDisplay(r.storagePosition)}
+                </small>
+              )}
             </div>
             <div className="detail-info-cell cell-wide">
               <small>生境描述</small>
