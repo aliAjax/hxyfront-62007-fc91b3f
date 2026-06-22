@@ -10,6 +10,16 @@ interface PhotoRecord {
   remark?: string;
 }
 
+interface StatusHistoryRecord {
+  id: string;
+  timestamp: string;
+  operator: string;
+  fromStatus: SpecimenRecord["status"] | null;
+  toStatus: SpecimenRecord["status"];
+  action: string;
+  remark?: string;
+}
+
 type IdentifyTaskStatus = "待分派" | "鉴定中" | "已完成" | "已退回";
 
 interface IdentifyTaskRecord {
@@ -74,6 +84,7 @@ interface SpecimenRecord {
   photoRemark: string;
   identifyTaskId?: string;
   family?: string;
+  statusHistory: StatusHistoryRecord[];
 }
 
 const PHOTO_TYPES = ["标本整体照", "标签特写", "叶片正面", "叶片背面", "花果特写", "生境照"];
@@ -133,6 +144,87 @@ const AUTO_SAVE_DEBOUNCE_MS = 800;
 
 const PRESS_STATUS_OPTIONS = ["待压制", "压制中", "已压制"];
 const IDENTIFY_STATUS_OPTIONS = ["待鉴定", "鉴定中", "已鉴定"];
+
+const STATUS_FLOW_ORDER: SpecimenRecord["status"][] = ["待压制", "待鉴定", "已入库", "需补照"];
+
+interface StatusTransition {
+  from: SpecimenRecord["status"];
+  to: SpecimenRecord["status"];
+  action: string;
+  requiredFields?: string[];
+  description: string;
+}
+
+const STATUS_TRANSITIONS: StatusTransition[] = [
+  { from: "待压制", to: "待鉴定", action: "完成压制", description: "标本压制完成，进入鉴定阶段" },
+  { from: "待鉴定", to: "已入库", action: "完成鉴定入库", requiredFields: ["storageLocation"], description: "鉴定完成并分配馆藏位置后入库" },
+  { from: "已入库", to: "需补照", action: "标记需补照", description: "发现照片缺失，进入补照流程" },
+  { from: "需补照", to: "已入库", action: "补照完成", description: "所有缺失照片补拍完成" },
+];
+
+function getAvailableTransitions(status: SpecimenRecord["status"]): StatusTransition[] {
+  return STATUS_TRANSITIONS.filter((t) => t.from === status);
+}
+
+function getBlockingReasons(specimen: SpecimenRecord, targetStatus: SpecimenRecord["status"]): string[] {
+  const reasons: string[] = [];
+  const transition = STATUS_TRANSITIONS.find((t) => t.from === specimen.status && t.to === targetStatus);
+  if (!transition) return ["不支持的状态流转"];
+
+  if (targetStatus === "已入库") {
+    if (!specimen.storageLocation && !specimen.storagePosition) {
+      reasons.push("未填写馆藏位置");
+    }
+    if (specimen.pressStatus !== "已压制") {
+      reasons.push("压制未完成");
+    }
+    if (specimen.identifyStatus !== "已鉴定") {
+      reasons.push("鉴定未完成");
+    }
+  }
+
+  if (targetStatus === "待鉴定") {
+    if (specimen.pressStatus !== "已压制") {
+      reasons.push("压制未完成");
+    }
+  }
+
+  if (targetStatus === "已入库" && specimen.status === "需补照") {
+    if (specimen.missingPhotoTypes.length > 0) {
+      reasons.push(`还有 ${specimen.missingPhotoTypes.length} 种照片未补拍完成`);
+    }
+  }
+
+  return reasons;
+}
+
+function canTransitionTo(specimen: SpecimenRecord, targetStatus: SpecimenRecord["status"]): boolean {
+  return getBlockingReasons(specimen, targetStatus).length === 0;
+}
+
+function createStatusHistoryRecord(
+  fromStatus: SpecimenRecord["status"] | null,
+  toStatus: SpecimenRecord["status"],
+  action: string,
+  operator: string = "当前用户",
+  remark?: string
+): StatusHistoryRecord {
+  return {
+    id: generateId(),
+    timestamp: formatNow(),
+    operator,
+    fromStatus,
+    toStatus,
+    action,
+    remark,
+  };
+}
+
+function createInitialStatusHistory(initialStatus: SpecimenRecord["status"]): StatusHistoryRecord[] {
+  return [
+    createStatusHistoryRecord(null, initialStatus, "标本录入", "系统", "初始状态"),
+  ];
+}
 
 const EMPTY_DRAFT_FORM = {
   collectionNo: "",
@@ -489,6 +581,7 @@ function rowsToRecords(rows: string[][]): SpecimenRecord[] {
       photoRecords: [],
       photoRemark: "",
       family: inferFamily(record.speciesName || ""),
+      statusHistory: createInitialStatusHistory("待压制"),
     };
   });
 }
@@ -613,7 +706,7 @@ function getTaskStatusBadgeClass(status: IdentifyTaskStatus): string {
   }
 }
 
-type ViewType = "main" | "photoTask" | "specimenDetail" | "identifyTask" | "locationList" | "locationDetail" | "labelPrint";
+type ViewType = "main" | "photoTask" | "specimenDetail" | "identifyTask" | "locationList" | "locationDetail" | "labelPrint" | "statusFlowCenter";
 
 type LabelSortType = "default" | "storage" | "collectionNo";
 
@@ -863,6 +956,10 @@ function App() {
       photoRecords: [],
       photoRemark: "",
       family: "槭树科",
+      statusHistory: [
+        { id: "sh-init-1-1", timestamp: "2024-06-15 08:30", operator: "系统", fromStatus: null, toStatus: "待压制", action: "标本录入", remark: "初始状态" },
+        { id: "sh-init-1-2", timestamp: "2024-06-15 14:20", operator: "李技术员", fromStatus: "待压制", toStatus: "待鉴定", action: "完成压制", remark: "压制质量合格" },
+      ],
     },
     {
       id: "init-2",
@@ -883,6 +980,9 @@ function App() {
       photoRecords: [],
       photoRemark: "",
       family: "蕨科",
+      statusHistory: [
+        { id: "sh-init-2-1", timestamp: "2024-06-15 09:00", operator: "系统", fromStatus: null, toStatus: "待压制", action: "标本录入", remark: "初始状态" },
+      ],
     },
     {
       id: "init-3",
@@ -904,6 +1004,11 @@ function App() {
       photoRecords: [],
       photoRemark: "",
       family: "菊科",
+      statusHistory: [
+        { id: "sh-init-3-1", timestamp: "2024-06-16 10:00", operator: "系统", fromStatus: null, toStatus: "待压制", action: "标本录入", remark: "初始状态" },
+        { id: "sh-init-3-2", timestamp: "2024-06-16 16:30", operator: "王技术员", fromStatus: "待压制", toStatus: "待鉴定", action: "完成压制", remark: "" },
+        { id: "sh-init-3-3", timestamp: "2024-06-17 11:00", operator: "陈鉴定员", fromStatus: "待鉴定", toStatus: "已入库", action: "完成鉴定入库", remark: "鉴定为菊科，分配馆藏位置" },
+      ],
     },
     {
       id: "init-4",
@@ -924,6 +1029,10 @@ function App() {
       photoRecords: [],
       photoRemark: "",
       family: "杜鹃花科",
+      statusHistory: [
+        { id: "sh-init-4-1", timestamp: "2024-06-18 08:00", operator: "系统", fromStatus: null, toStatus: "待压制", action: "标本录入", remark: "初始状态" },
+        { id: "sh-init-4-2", timestamp: "2024-06-18 15:00", operator: "李技术员", fromStatus: "待压制", toStatus: "待鉴定", action: "完成压制", remark: "" },
+      ],
     },
     {
       id: "init-5",
@@ -944,6 +1053,10 @@ function App() {
       photoRecords: [],
       photoRemark: "",
       family: "槭树科",
+      statusHistory: [
+        { id: "sh-init-5-1", timestamp: "2024-06-18 09:30", operator: "系统", fromStatus: null, toStatus: "待压制", action: "标本录入", remark: "初始状态" },
+        { id: "sh-init-5-2", timestamp: "2024-06-18 17:00", operator: "王技术员", fromStatus: "待压制", toStatus: "待鉴定", action: "完成压制", remark: "" },
+      ],
     },
     {
       id: "init-6",
@@ -964,6 +1077,10 @@ function App() {
       photoRecords: [],
       photoRemark: "",
       family: "蕨科",
+      statusHistory: [
+        { id: "sh-init-6-1", timestamp: "2024-06-19 07:30", operator: "系统", fromStatus: null, toStatus: "待压制", action: "标本录入", remark: "初始状态" },
+        { id: "sh-init-6-2", timestamp: "2024-06-19 14:00", operator: "李技术员", fromStatus: "待压制", toStatus: "待鉴定", action: "完成压制", remark: "" },
+      ],
     },
     {
       id: "init-photo-1",
@@ -995,6 +1112,12 @@ function App() {
       photoRemark: "",
       identifyTaskId: "task-1",
       family: "樟科",
+      statusHistory: [
+        { id: "sh-photo-1-1", timestamp: "2024-06-10 10:00", operator: "系统", fromStatus: null, toStatus: "待压制", action: "标本录入", remark: "初始状态" },
+        { id: "sh-photo-1-2", timestamp: "2024-06-12 15:00", operator: "李技术员", fromStatus: "待压制", toStatus: "待鉴定", action: "完成压制", remark: "" },
+        { id: "sh-photo-1-3", timestamp: "2024-06-15 11:00", operator: "王鉴定员", fromStatus: "待鉴定", toStatus: "已入库", action: "完成鉴定入库", remark: "鉴定为山胡椒" },
+        { id: "sh-photo-1-4", timestamp: "2024-06-18 09:30", operator: "系统", fromStatus: "已入库", toStatus: "需补照", action: "标记需补照", remark: "入库质检发现照片缺失" },
+      ],
     },
     {
       id: "init-photo-2",
@@ -1026,6 +1149,12 @@ function App() {
       photoRemark: "",
       identifyTaskId: "task-2",
       family: "蔷薇科",
+      statusHistory: [
+        { id: "sh-photo-2-1", timestamp: "2024-06-12 08:30", operator: "系统", fromStatus: null, toStatus: "待压制", action: "标本录入", remark: "初始状态" },
+        { id: "sh-photo-2-2", timestamp: "2024-06-14 16:00", operator: "王技术员", fromStatus: "待压制", toStatus: "待鉴定", action: "完成压制", remark: "" },
+        { id: "sh-photo-2-3", timestamp: "2024-06-17 10:00", operator: "李鉴定员", fromStatus: "待鉴定", toStatus: "已入库", action: "完成鉴定入库", remark: "鉴定为野蔷薇" },
+        { id: "sh-photo-2-4", timestamp: "2024-06-19 14:15", operator: "李鉴定员", fromStatus: "已入库", toStatus: "需补照", action: "标记需补照", remark: "花果特征不清晰，需重拍" },
+      ],
     },
     {
       id: "init-photo-3",
@@ -1063,6 +1192,12 @@ function App() {
       ],
       photoRemark: "柜位钥匙由王老师保管",
       family: "壳斗科",
+      statusHistory: [
+        { id: "sh-photo-3-1", timestamp: "2024-06-08 09:00", operator: "系统", fromStatus: null, toStatus: "待压制", action: "标本录入", remark: "初始状态" },
+        { id: "sh-photo-3-2", timestamp: "2024-06-10 14:00", operator: "张技术员", fromStatus: "待压制", toStatus: "待鉴定", action: "完成压制", remark: "" },
+        { id: "sh-photo-3-3", timestamp: "2024-06-14 11:30", operator: "陈鉴定员", fromStatus: "待鉴定", toStatus: "已入库", action: "完成鉴定入库", remark: "鉴定为麻栎" },
+        { id: "sh-photo-3-4", timestamp: "2024-06-17 11:00", operator: "系统", fromStatus: "已入库", toStatus: "需补照", action: "标记需补照", remark: "标本拍摄质量不合格，反光严重" },
+      ],
     },
   ]);
 
@@ -1088,6 +1223,7 @@ function App() {
   const [selectedLocationName, setSelectedLocationName] = useState<string | null>(null);
   const [locationSearch, setLocationSearch] = useState<string>("");
   const [detailFromLocation, setDetailFromLocation] = useState<boolean>(false);
+  const [detailFromStatusFlow, setDetailFromStatusFlow] = useState<boolean>(false);
 
   const [showSingleForm, setShowSingleForm] = useState(false);
   const [singleForm, setSingleForm] = useState({ ...EMPTY_DRAFT_FORM });
@@ -1115,6 +1251,12 @@ function App() {
   const [selectedLabelSpecimens, setSelectedLabelSpecimens] = useState<Set<string>>(new Set());
   const [selectedQueueItems, setSelectedQueueItems] = useState<Set<string>>(new Set());
   const labelQueueLoadedRef = useRef(false);
+
+  const [statusFlowFilter, setStatusFlowFilter] = useState<SpecimenRecord["status"] | "all">("all");
+  const [statusFlowSearch, setStatusFlowSearch] = useState<string>("");
+  const [selectedStatusSpecimenId, setSelectedStatusSpecimenId] = useState<string | null>(null);
+  const [showStatusTransitionModal, setShowStatusTransitionModal] = useState<{ specimenId: string; targetStatus: SpecimenRecord["status"] } | null>(null);
+  const [statusTransitionRemark, setStatusTransitionRemark] = useState<string>("");
 
   const initializeDrafts = () => {
     if (draftsLoadedRef.current) return;
@@ -1592,6 +1734,38 @@ function App() {
     return queue.find((r) => r.id === detailSpecimenId) || null;
   }, [detailSpecimenId, queue]);
 
+  const statusFlowFilteredSpecimens = useMemo(() => {
+    let list = [...queue];
+    if (statusFlowFilter !== "all") {
+      list = list.filter((s) => s.status === statusFlowFilter);
+    }
+    if (statusFlowSearch.trim()) {
+      const keyword = statusFlowSearch.trim().toLowerCase();
+      list = list.filter(
+        (s) =>
+          s.collectionNo.toLowerCase().includes(keyword) ||
+          s.speciesName.toLowerCase().includes(keyword) ||
+          s.collectionLocation.toLowerCase().includes(keyword)
+      );
+    }
+    return list;
+  }, [queue, statusFlowFilter, statusFlowSearch]);
+
+  const selectedStatusSpecimen = useMemo(() => {
+    if (!selectedStatusSpecimenId) return null;
+    return queue.find((s) => s.id === selectedStatusSpecimenId) || null;
+  }, [selectedStatusSpecimenId, queue]);
+
+  const statusFlowCounts = useMemo(() => {
+    return {
+      all: queue.length,
+      pending: queue.filter((s) => s.status === "待压制").length,
+      review: queue.filter((s) => s.status === "待鉴定").length,
+      stored: queue.filter((s) => s.status === "已入库").length,
+      photo: queue.filter((s) => s.status === "需补照").length,
+    };
+  }, [queue]);
+
   const handleOpenPhotoTask = () => {
     setCurrentView("photoTask");
   };
@@ -1607,6 +1781,70 @@ function App() {
   const handleBackToMain = () => {
     setCurrentView("main");
     setDetailSpecimenId(null);
+  };
+
+  const handleOpenStatusFlowCenter = () => {
+    setCurrentView("statusFlowCenter");
+    setStatusFlowFilter("all");
+    setStatusFlowSearch("");
+    setSelectedStatusSpecimenId(null);
+  };
+
+  const handleBackToStatusFlowCenter = () => {
+    setCurrentView("statusFlowCenter");
+    setDetailSpecimenId(null);
+    setDetailFromStatusFlow(false);
+  };
+
+  const handleOpenStatusTransition = (specimenId: string, targetStatus: SpecimenRecord["status"]) => {
+    setShowStatusTransitionModal({ specimenId, targetStatus });
+    setStatusTransitionRemark("");
+  };
+
+  const handleCloseStatusTransition = () => {
+    setShowStatusTransitionModal(null);
+    setStatusTransitionRemark("");
+  };
+
+  const handleStatusTransition = () => {
+    if (!showStatusTransitionModal) return;
+    const { specimenId, targetStatus } = showStatusTransitionModal;
+    const specimen = queue.find((s) => s.id === specimenId);
+    if (!specimen) return;
+
+    const blockingReasons = getBlockingReasons(specimen, targetStatus);
+    if (blockingReasons.length > 0) return;
+
+    const transition = STATUS_TRANSITIONS.find((t) => t.from === specimen.status && t.to === targetStatus);
+    if (!transition) return;
+
+    const historyRecord = createStatusHistoryRecord(
+      specimen.status,
+      targetStatus,
+      transition.action,
+      "当前用户",
+      statusTransitionRemark || undefined
+    );
+
+    setQueue((prev) =>
+      prev.map((s) => {
+        if (s.id !== specimenId) return s;
+        let updated = {
+          ...s,
+          status: targetStatus,
+          statusHistory: [...s.statusHistory, historyRecord],
+        };
+        if (targetStatus === "待鉴定") {
+          updated.pressStatus = "已压制";
+        }
+        if (targetStatus === "已入库" && s.status === "待鉴定") {
+          updated.identifyStatus = "已鉴定";
+        }
+        return updated;
+      })
+    );
+
+    handleCloseStatusTransition();
   };
 
   const handleBackToIdentifyTask = () => {
@@ -1774,7 +2012,19 @@ function App() {
       setQueue((prev) =>
         prev.map((s) => {
           if (s.id !== task.specimenId) return s;
-          return { ...s, identifyStatus: "已鉴定", status: "已入库" as const };
+          const historyRecord = createStatusHistoryRecord(
+            s.status,
+            "已入库",
+            "完成鉴定入库",
+            "当前用户",
+            completeRemark || undefined
+          );
+          return {
+            ...s,
+            identifyStatus: "已鉴定",
+            status: "已入库" as const,
+            statusHistory: [...s.statusHistory, historyRecord],
+          };
         })
       );
     }
@@ -1858,6 +2108,7 @@ function App() {
         if (r.id !== specimenId) return r;
         const selectedTypes = selectedPhotoTypes[specimenId] || r.missingPhotoTypes;
         const remainingTypes = r.missingPhotoTypes.filter((t) => !selectedTypes.includes(t));
+        const newStatus = remainingTypes.length === 0 ? "已入库" : "需补照";
         const newRecord: PhotoRecord = {
           id: generateId(),
           timestamp: formatNow(),
@@ -1866,13 +2117,24 @@ function App() {
           photoTypes: selectedTypes,
           remark: tempRemarks[specimenId] || undefined,
         };
-        return {
+        let updated = {
           ...r,
           missingPhotoTypes: remainingTypes,
-          status: remainingTypes.length === 0 ? "已入库" : "需补照",
+          status: newStatus,
           photoRecords: [...r.photoRecords, newRecord],
           photoRemark: tempRemarks[specimenId] || r.photoRemark,
         };
+        if (r.status !== newStatus) {
+          const historyRecord = createStatusHistoryRecord(
+            r.status,
+            newStatus,
+            "补照完成",
+            "当前用户",
+            tempRemarks[specimenId] || undefined
+          );
+          updated.statusHistory = [...r.statusHistory, historyRecord];
+        }
+        return updated;
       })
     );
     setSelectedPhotoTypes((prev) => {
@@ -2132,6 +2394,7 @@ function App() {
       photoRecords: [],
       photoRemark: "",
       family: inferFamily(singleForm.speciesName),
+      statusHistory: createInitialStatusHistory(computedStatus),
     };
 
     if (newRecord.isDuplicate && newRecord.collectionNo) {
@@ -2475,6 +2738,16 @@ function App() {
                 <small>分组分派标本给鉴定人</small>
               </div>
               <span className="identify-task-count">{identifyTaskMetrics.pending + identifyTaskMetrics.inProgress}</span>
+            </button>
+          </div>
+          <div className="side-task-entry">
+            <button className="status-flow-entry" onClick={handleOpenStatusFlowCenter}>
+              <span className="status-flow-icon">🔄</span>
+              <div className="status-flow-text">
+                <strong>状态流转中心</strong>
+                <small>追踪标本全生命周期</small>
+              </div>
+              <span className="status-flow-count">{queue.length}</span>
             </button>
           </div>
           <div className="side-task-entry">
@@ -3959,6 +4232,370 @@ function App() {
     </>
   );
 
+  const renderStatusFlowCenter = () => {
+    const filteredSpecimens = statusFlowFilteredSpecimens;
+    const selectedSpecimen = selectedStatusSpecimen;
+    const statusCounts = statusFlowCounts;
+
+    return (
+      <>
+        <section className="hero hero-detail">
+          <p className="breadcrumbs">
+            <button className="link-btn" onClick={handleBackToMain}>
+              ← 返回主页
+            </button>
+            <span className="sep">/</span>
+            <span>状态流转中心</span>
+          </p>
+          <h1>🔄 标本状态流转中心</h1>
+          <span>追踪标本从采集到入库的完整生命周期，查看每个阶段的流转记录与阻塞原因</span>
+        </section>
+
+        <section className="panel">
+          <div className="heading">
+            <div>
+              <p>流转概览</p>
+              <h2>各阶段标本数量</h2>
+            </div>
+          </div>
+          <div className="status-flow-overview">
+            {[
+              { key: "all", label: "全部", count: statusCounts.all, icon: "📋" },
+              { key: "待压制", label: "待压制", count: statusCounts.pending, icon: "🌿" },
+              { key: "待鉴定", label: "待鉴定", count: statusCounts.review, icon: "🔬" },
+              { key: "已入库", label: "已入库", count: statusCounts.stored, icon: "📦" },
+              { key: "需补照", label: "需补照", count: statusCounts.photo, icon: "📷" },
+            ].map((item) => (
+              <button
+                key={item.key}
+                className={`status-overview-card ${statusFlowFilter === item.key ? "card-active" : ""}`}
+                onClick={() => setStatusFlowFilter(item.key as any)}
+              >
+                <span className="overview-icon">{item.icon}</span>
+                <span className="overview-label">{item.label}</span>
+                <strong className="overview-count">{item.count}</strong>
+              </button>
+            ))}
+          </div>
+        </section>
+
+        <div className="status-flow-layout">
+          <section className="panel status-list-panel">
+            <div className="heading">
+              <div>
+                <p>标本列表</p>
+                <h2>
+                  {statusFlowFilter === "all" ? "全部标本" : statusFlowFilter}
+                  <span className="preview-summary">共 {filteredSpecimens.length} 份</span>
+                </h2>
+              </div>
+            </div>
+            <div className="status-search-row">
+              <input
+                type="text"
+                placeholder="搜索采集号、物种名、采集地点..."
+                value={statusFlowSearch}
+                onChange={(e) => setStatusFlowSearch(e.target.value)}
+                className="search-input"
+              />
+            </div>
+            <div className="status-specimen-list">
+              {filteredSpecimens.length === 0 ? (
+                <div className="empty-state">暂无符合条件的标本</div>
+              ) : (
+                filteredSpecimens.map((s) => {
+                  const transitions = getAvailableTransitions(s.status);
+                  const isSelected = selectedStatusSpecimenId === s.id;
+                  return (
+                    <div
+                      key={s.id}
+                      className={`status-specimen-card ${isSelected ? "card-selected" : ""}`}
+                      onClick={() => setSelectedStatusSpecimenId(s.id)}
+                    >
+                      <div className="specimen-card-header">
+                        <div>
+                          <h3 className="specimen-card-collection">{s.collectionNo}</h3>
+                          <p className="specimen-card-species">{s.speciesName || "物种待定"}</p>
+                        </div>
+                        <span className={`status-badge ${getStatusBadgeClass(s.status)}`}>
+                          {s.status}
+                        </span>
+                      </div>
+                      <p className="specimen-card-location">📍 {s.collectionLocation || "未填写"}</p>
+                      <div className="specimen-card-actions">
+                        {transitions.length > 0 ? (
+                          transitions.map((t) => {
+                            const canDo = canTransitionTo(s, t.to);
+                            const reasons = getBlockingReasons(s, t.to);
+                            return (
+                              <button
+                                key={t.to}
+                                className={`action-btn ${canDo ? "action-primary" : "action-disabled"}`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (canDo) handleOpenStatusTransition(s.id, t.to);
+                                }}
+                                disabled={!canDo}
+                                title={canDo ? "" : reasons.join("；")}
+                              >
+                                {t.action}
+                                {!canDo && reasons.length > 0 && (
+                                  <span className="action-block-reason">
+                                    ⚠️ {reasons[0]}
+                                  </span>
+                                )}
+                              </button>
+                            );
+                          })
+                        ) : (
+                          <span className="no-actions-text">当前状态无可用动作</span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </section>
+
+          <section className="panel status-detail-panel">
+            {!selectedSpecimen ? (
+              <div className="empty-detail-state">
+                <div className="empty-detail-icon">👈</div>
+                <p>选择左侧标本查看详细流转信息</p>
+              </div>
+            ) : (
+              <>
+                <div className="heading">
+                  <div>
+                    <p>标本详情</p>
+                    <h2>{selectedSpecimen.collectionNo}</h2>
+                    <span className="preview-summary">
+                      {selectedSpecimen.speciesName || "物种待定"}
+                    </span>
+                  </div>
+                  <button
+                    className="link-btn"
+                    onClick={() => {
+                      setDetailSpecimenId(selectedSpecimen.id);
+                      setDetailFromStatusFlow(true);
+                      setDetailFromLocation(false);
+                      setCurrentView("specimenDetail");
+                    }}
+                  >
+                    查看完整详情 →
+                  </button>
+                </div>
+
+                <div className="status-flow-timeline">
+                  <p className="timeline-title">生命周期阶段</p>
+                  <div className="flow-stages">
+                    {["待压制", "待鉴定", "已入库"].map((stage, idx) => {
+                      const stageStatus = stage as SpecimenRecord["status"];
+                      const currentIdx = ["待压制", "待鉴定", "已入库"].indexOf(selectedSpecimen.status);
+                      const stageIdx = ["待压制", "待鉴定", "已入库"].indexOf(stageStatus);
+                      const isCompleted = stageIdx < currentIdx || selectedSpecimen.status === stageStatus;
+                      const isCurrent = selectedSpecimen.status === stageStatus;
+                      const isPhotoStage = selectedSpecimen.status === "需补照";
+
+                      return (
+                        <div key={stage} className="flow-stage-item">
+                          <div
+                            className={`flow-stage-dot ${
+                              isCurrent ? "stage-current" : isCompleted ? "stage-done" : "stage-pending"
+                            }`}
+                          >
+                            {isCompleted && !isCurrent ? "✓" : idx + 1}
+                          </div>
+                          <div className="flow-stage-label">
+                            <span className={isCurrent ? "label-current" : ""}>{stage}</span>
+                          </div>
+                          {idx < 2 && (
+                            <div
+                              className={`flow-stage-line ${
+                                stageIdx < currentIdx ? "line-done" : "line-pending"
+                              }`}
+                            />
+                          )}
+                        </div>
+                      );
+                    })}
+                    <div className="flow-stage-item">
+                      <div
+                        className={`flow-stage-dot ${
+                          selectedSpecimen.status === "需补照" ? "stage-warn" : "stage-optional"
+                        }`}
+                      >
+                        !
+                      </div>
+                      <div className="flow-stage-label">
+                        <span className={selectedSpecimen.status === "需补照" ? "label-warn" : ""}>
+                          需补照
+                        </span>
+                        <small className="stage-sub-label">可选分支</small>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="status-actions-section">
+                  <p className="section-subtitle">可执行动作</p>
+                  <div className="action-buttons-group">
+                    {getAvailableTransitions(selectedSpecimen.status).length === 0 ? (
+                      <span className="no-actions-text">当前状态无可用动作</span>
+                    ) : (
+                      getAvailableTransitions(selectedSpecimen.status).map((t) => {
+                        const canDo = canTransitionTo(selectedSpecimen, t.to);
+                        const reasons = getBlockingReasons(selectedSpecimen, t.to);
+                        return (
+                          <button
+                            key={t.to}
+                            className={`action-btn-large ${canDo ? "action-primary" : "action-disabled"}`}
+                            onClick={() => canDo && handleOpenStatusTransition(selectedSpecimen.id, t.to)}
+                            disabled={!canDo}
+                          >
+                            <span className="action-btn-title">{t.action}</span>
+                            <span className="action-btn-desc">{t.description}</span>
+                            {!canDo && reasons.length > 0 && (
+                              <div className="blocking-reasons">
+                                <p className="blocking-title">阻塞原因：</p>
+                                <ul>
+                                  {reasons.map((r, i) => (
+                                    <li key={i}>⚠️ {r}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+
+                <div className="status-history-section">
+                  <div className="heading">
+                    <div>
+                      <p>流转记录</p>
+                      <h2>状态历史</h2>
+                    </div>
+                    <span className="preview-summary">
+                      共 {selectedSpecimen.statusHistory.length} 条记录
+                    </span>
+                  </div>
+                  <div className="timeline">
+                    {selectedSpecimen.statusHistory.length === 0 ? (
+                      <div className="empty-state">暂无流转记录</div>
+                    ) : (
+                      [...selectedSpecimen.statusHistory].reverse().map((record) => (
+                        <div key={record.id} className="timeline-item">
+                          <div className="timeline-dot"></div>
+                          <div className="timeline-content">
+                            <div className="timeline-header">
+                              <span className="timeline-action action-status">
+                                {record.action}
+                              </span>
+                              <span className="timeline-operator">{record.operator}</span>
+                              <span className="timeline-time">{record.timestamp}</span>
+                            </div>
+                            <div className="status-transition-path">
+                              {record.fromStatus ? (
+                                <>
+                                  <span className={`status-path-badge ${getStatusBadgeClass(record.fromStatus)}`}>
+                                    {record.fromStatus}
+                                  </span>
+                                  <span className="path-arrow">→</span>
+                                </>
+                              ) : null}
+                              <span className={`status-path-badge ${getStatusBadgeClass(record.toStatus)}`}>
+                                {record.toStatus}
+                              </span>
+                            </div>
+                            {record.remark && (
+                              <p className="timeline-remark">📝 {record.remark}</p>
+                            )}
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
+          </section>
+        </div>
+
+        {showStatusTransitionModal && (() => {
+          const specimen = queue.find((s) => s.id === showStatusTransitionModal.specimenId);
+          const transition = STATUS_TRANSITIONS.find(
+            (t) => t.from === specimen?.status && t.to === showStatusTransitionModal.targetStatus
+          );
+          if (!specimen || !transition) return null;
+          const canDo = canTransitionTo(specimen, transition.to);
+          const reasons = getBlockingReasons(specimen, transition.to);
+
+          return (
+            <div className="modal-overlay" onClick={handleCloseStatusTransition}>
+              <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+                <div className="modal-header">
+                  <h3>{transition.action}</h3>
+                  <button className="modal-close" onClick={handleCloseStatusTransition}>
+                    ✕
+                  </button>
+                </div>
+                <div className="modal-body">
+                  <p className="modal-desc">
+                    标本 <strong>{specimen.collectionNo}</strong> 将从
+                    <span className={`status-badge ${getStatusBadgeClass(specimen.status)}`}>
+                      {specimen.status}
+                    </span>
+                    流转到
+                    <span className={`status-badge ${getStatusBadgeClass(transition.to)}`}>
+                      {transition.to}
+                    </span>
+                  </p>
+
+                  {!canDo && reasons.length > 0 && (
+                    <div className="error-box">
+                      <p className="error-title">无法执行此操作，存在以下阻塞：</p>
+                      <ul>
+                        {reasons.map((r, i) => (
+                          <li key={i}>⚠️ {r}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  <div className="form-row">
+                    <label>备注信息</label>
+                    <textarea
+                      value={statusTransitionRemark}
+                      onChange={(e) => setStatusTransitionRemark(e.target.value)}
+                      placeholder="可选，填写此次状态流转的备注说明..."
+                      rows={3}
+                    />
+                  </div>
+                </div>
+                <div className="modal-footer">
+                  <button className="ghost-btn" onClick={handleCloseStatusTransition}>
+                    取消
+                  </button>
+                  <button
+                    className="primary"
+                    onClick={handleStatusTransition}
+                    disabled={!canDo}
+                  >
+                    确认流转
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+      </>
+    );
+  };
+
   const renderDetailView = () => {
     if (!detailSpecimen) {
       return (
@@ -3975,18 +4612,25 @@ function App() {
     const r = detailSpecimen;
     const isPending = r.status === "需补照" && r.missingPhotoTypes.length > 0;
     const handleBack = () => {
-      if (detailFromLocation) {
+      if (detailFromStatusFlow) {
+        handleBackToStatusFlowCenter();
+      } else if (detailFromLocation) {
         handleBackToLocationDetail();
       } else {
         handleBackToPhotoTask();
       }
+    };
+    const getBackLabel = () => {
+      if (detailFromStatusFlow) return "返回状态流转中心";
+      if (detailFromLocation) return "返回地点详情";
+      return "返回需补照任务";
     };
     return (
       <>
         <section className="hero hero-detail">
           <p className="breadcrumbs">
             <button className="link-btn" onClick={handleBack}>
-              ← {detailFromLocation ? "返回地点详情" : "返回需补照任务"}
+              ← {getBackLabel()}
             </button>
             <span className="sep">/</span>
             <button className="link-btn" onClick={handleBackToMain}>
@@ -4054,6 +4698,105 @@ function App() {
             <div className="detail-info-cell">
               <small>鉴定状态</small>
               <p>{r.identifyStatus}</p>
+            </div>
+          </div>
+        </section>
+
+        <section className="panel">
+          <div className="heading">
+            <div>
+              <p>生命周期</p>
+              <h2>
+                状态流转
+                <span className="preview-summary">
+                  当前阶段：<strong>{r.status}</strong>
+                </span>
+              </h2>
+            </div>
+            <button
+              className="link-btn"
+              onClick={handleOpenStatusFlowCenter}
+            >
+              打开流转中心 →
+            </button>
+          </div>
+
+          <div className="detail-status-flow">
+            <div className="flow-stages flow-stages-detail">
+              {["待压制", "待鉴定", "已入库"].map((stage, idx) => {
+                const stageStatus = stage as SpecimenRecord["status"];
+                const mainStages = ["待压制", "待鉴定", "已入库"];
+                const currentIdx = mainStages.indexOf(r.status);
+                const stageIdx = mainStages.indexOf(stageStatus);
+                const isCompleted = stageIdx < currentIdx || r.status === stageStatus;
+                const isCurrent = r.status === stageStatus;
+                return (
+                  <div key={stage} className="flow-stage-item">
+                    <div
+                      className={`flow-stage-dot ${
+                        isCurrent ? "stage-current" : isCompleted ? "stage-done" : "stage-pending"
+                      }`}
+                    >
+                      {isCompleted && !isCurrent ? "✓" : idx + 1}
+                    </div>
+                    <div className="flow-stage-label">
+                      <span className={isCurrent ? "label-current" : ""}>{stage}</span>
+                    </div>
+                    {idx < 2 && (
+                      <div
+                        className={`flow-stage-line ${
+                          stageIdx < currentIdx ? "line-done" : "line-pending"
+                        }`}
+                      />
+                    )}
+                  </div>
+                );
+              })}
+              <div className="flow-stage-item">
+                <div
+                  className={`flow-stage-dot ${
+                r.status === "需补照" ? "stage-warn" : "stage-optional"
+              }`}
+                >
+                  !
+                </div>
+                <div className="flow-stage-label">
+                  <span className={r.status === "需补照" ? "label-warn" : ""}>
+                    需补照
+                  </span>
+                  <small className="stage-sub-label">可选分支</small>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="detail-actions-row">
+            <p className="section-subtitle">可执行动作</p>
+            <div className="action-buttons-inline">
+              {getAvailableTransitions(r.status).length === 0 ? (
+                <span className="no-actions-text">当前状态无可用动作</span>
+              ) : (
+                getAvailableTransitions(r.status).map((t) => {
+                  const canDo = canTransitionTo(r, t.to);
+                  const reasons = getBlockingReasons(r, t.to);
+                  return (
+                    <button
+                      key={t.to}
+                      className={`action-btn ${canDo ? "action-primary" : "action-disabled"}`}
+                      onClick={() => canDo && handleOpenStatusTransition(r.id, t.to)}
+                      disabled={!canDo}
+                      title={canDo ? "" : reasons.join("；")}
+                    >
+                      {t.action}
+                      {!canDo && reasons.length > 0 && (
+                        <span className="action-block-reason">
+                          ⚠️ {reasons[0]}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })
+              )}
             </div>
           </div>
         </section>
@@ -5101,6 +5844,7 @@ function App() {
       {currentView === "locationList" && renderLocationListView()}
       {currentView === "locationDetail" && renderLocationDetailView()}
       {currentView === "labelPrint" && renderLabelPrintView()}
+      {currentView === "statusFlowCenter" && renderStatusFlowCenter()}
       {renderConflictPanel()}
     </main>
   );
