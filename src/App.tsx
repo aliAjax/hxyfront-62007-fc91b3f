@@ -1050,25 +1050,24 @@ function App() {
     setDrafts(meaningful);
     saveDrafts(meaningful);
 
-    if (showSingleForm) {
-      if (meaningful.length > 0) {
-        const latest = meaningful[0];
-        setCurrentDraftId(latest.id);
-        setSingleForm({
-          collectionNo: latest.collectionNo,
-          speciesName: latest.speciesName,
-          collectionLocation: latest.collectionLocation,
-          altitude: latest.altitude,
-          collector: latest.collector,
-          habitat: latest.habitat,
-          pressStatus: latest.pressStatus,
-          identifyStatus: latest.identifyStatus,
-        });
-        setSinglePosition({ ...latest.storagePosition });
-      } else {
-        const nd = createEmptyDraft();
-        setCurrentDraftId(nd.id);
-      }
+    if (meaningful.length > 0) {
+      const latest = meaningful[0];
+      setCurrentDraftId(latest.id);
+      setSingleForm({
+        collectionNo: latest.collectionNo,
+        speciesName: latest.speciesName,
+        collectionLocation: latest.collectionLocation,
+        altitude: latest.altitude,
+        collector: latest.collector,
+        habitat: latest.habitat,
+        pressStatus: latest.pressStatus,
+        identifyStatus: latest.identifyStatus,
+      });
+      setSinglePosition({ ...latest.storagePosition });
+      setShowSingleForm(true);
+    } else {
+      const nd = createEmptyDraft();
+      setCurrentDraftId(nd.id);
     }
   };
 
@@ -1213,10 +1212,48 @@ function App() {
   useMemo(() => {
     if (!showSingleForm) return;
     if (!draftsLoadedRef.current) return;
-    if (!currentDraftId) {
+
+    if (drafts.length > 0) {
+      let target: Draft | undefined;
+      if (currentDraftId) {
+        target = drafts.find((d) => d.id === currentDraftId);
+      }
+      if (!target) {
+        target = drafts[0];
+      }
+      if (target) {
+        const currentFormEmpty =
+          !singleForm.collectionNo &&
+          !singleForm.speciesName &&
+          !singleForm.collectionLocation &&
+          !singleForm.altitude &&
+          !singleForm.collector &&
+          !singleForm.habitat &&
+          singleForm.pressStatus === "待压制" &&
+          singleForm.identifyStatus === "待鉴定";
+        const currentPosEmpty =
+          !singlePosition.floor &&
+          !singlePosition.cabinet &&
+          !singlePosition.shelf &&
+          !singlePosition.slot;
+        if (currentFormEmpty && currentPosEmpty) {
+          setCurrentDraftId(target.id);
+          setSingleForm({
+            collectionNo: target.collectionNo,
+            speciesName: target.speciesName,
+            collectionLocation: target.collectionLocation,
+            altitude: target.altitude,
+            collector: target.collector,
+            habitat: target.habitat,
+            pressStatus: target.pressStatus,
+            identifyStatus: target.identifyStatus,
+          });
+          setSinglePosition({ ...target.storagePosition });
+        }
+      }
+    } else if (!currentDraftId) {
       const nd = createEmptyDraft();
       setCurrentDraftId(nd.id);
-      return;
     }
   }, [showSingleForm]);
 
