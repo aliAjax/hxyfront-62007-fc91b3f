@@ -174,6 +174,58 @@ function saveDrafts(drafts: Draft[]): void {
   }
 }
 
+function loadLabelPrintQueue(): LabelPrintItem[] {
+  try {
+    const raw = localStorage.getItem(LABEL_PRINT_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (d) => d && typeof d.id === "string" && typeof d.collectionNo === "string"
+    );
+  } catch {
+    return [];
+  }
+}
+
+function saveLabelPrintQueue(items: LabelPrintItem[]): void {
+  try {
+    localStorage.setItem(LABEL_PRINT_STORAGE_KEY, JSON.stringify(items));
+  } catch {
+    /* silently ignore quota errors */
+  }
+}
+
+function specimenToLabelItem(s: SpecimenRecord): LabelPrintItem {
+  return {
+    id: s.id,
+    collectionNo: s.collectionNo,
+    speciesName: s.speciesName,
+    collectionLocation: s.collectionLocation,
+    altitude: s.altitude,
+    collector: s.collector,
+    identifyStatus: s.identifyStatus,
+    storageLocation: s.storageLocation,
+    storagePosition: s.storagePosition ? { ...s.storagePosition } : undefined,
+    family: s.family,
+  };
+}
+
+function sortLabelItemsByStorage(items: LabelPrintItem[]): LabelPrintItem[] {
+  return [...items].sort((a, b) => {
+    const posA = a.storagePosition;
+    const posB = b.storagePosition;
+    if (!posA && !posB) return a.collectionNo.localeCompare(b.collectionNo);
+    if (!posA) return 1;
+    if (!posB) return -1;
+    if (posA.floor !== posB.floor) return posA.floor.localeCompare(posB.floor);
+    if (posA.cabinet !== posB.cabinet) return posA.cabinet.localeCompare(posB.cabinet);
+    if (posA.shelf !== posB.shelf) return posA.shelf.localeCompare(posB.shelf);
+    if (posA.slot !== posB.slot) return posA.slot.localeCompare(posB.slot);
+    return a.collectionNo.localeCompare(b.collectionNo);
+  });
+}
+
 function createEmptyDraft(): Draft {
   return {
     id: generateId(),
@@ -561,7 +613,24 @@ function getTaskStatusBadgeClass(status: IdentifyTaskStatus): string {
   }
 }
 
-type ViewType = "main" | "photoTask" | "specimenDetail" | "identifyTask" | "locationList" | "locationDetail";
+type ViewType = "main" | "photoTask" | "specimenDetail" | "identifyTask" | "locationList" | "locationDetail" | "labelPrint";
+
+type LabelSortType = "default" | "storage" | "collectionNo";
+
+interface LabelPrintItem {
+  id: string;
+  collectionNo: string;
+  speciesName: string;
+  collectionLocation: string;
+  altitude: string;
+  collector: string;
+  identifyStatus: string;
+  storageLocation: string;
+  storagePosition?: StoragePosition;
+  family?: string;
+}
+
+const LABEL_PRINT_STORAGE_KEY = "hxyfront_label_print_queue_v1";
 
 interface LocationProfile {
   name: string;
@@ -1040,6 +1109,13 @@ function App() {
   const [singleConflictRecord, setSingleConflictRecord] = useState<SpecimenRecord | null>(null);
   const [conflictCopySuffix, setConflictCopySuffix] = useState("-副本1");
 
+  const [labelPrintQueue, setLabelPrintQueue] = useState<LabelPrintItem[]>([]);
+  const [labelSortType, setLabelSortType] = useState<LabelSortType>("default");
+  const [showLabelPreview, setShowLabelPreview] = useState(false);
+  const [labelSelectMode, setLabelSelectMode] = useState<"queue" | "storage">("queue");
+  const [selectedLabelSpecimens, setSelectedLabelSpecimens] = useState<Set<string>>(new Set());
+  const labelQueueLoadedRef = useRef(false);
+
   const initializeDrafts = () => {
     if (draftsLoadedRef.current) return;
     draftsLoadedRef.current = true;
@@ -1205,8 +1281,97 @@ function App() {
     setCurrentDraftId(nd.id);
   };
 
-  if (!draftsLoadedRef.current) {
-    initializeDrafts();
+  const initializeLabelQueue = () => {
+    if (labelQueueLoadedRef.current) return;
+    labelQueueLoadedRef.current = true;
+    const loaded = loadLabelPrintQueue();
+    setLabelPrintQueue(loaded);
+  };
+
+  const persistLabelQueue = (items: LabelPrintItem[]) => {
+    setLabelPrintQueue(items);
+    saveLabelPrintQueue(items);
+  };
+
+  const storedSpecimens = useMemo(() => {
+    return queue.filter((r) => r.status === "已入库");
+  }, [queue]);
+
+  const sortedLabelQueue = useMemo(() => {
+    if (labelSortType === "storage") {
+      return sortLabelItemsByStorage(labelPrintQueue);
+    }
+    if (labelSortType === "collectionNo") {
+      return [...labelPrintQueue].sort((a, b) =>
+        a.collectionNo.localeCompare(b.collectionNo));
+    }
+    return labelPrintQueue;
+  }, [labelPrintQueue, labelSortType]);
+
+  const handleOpenLabelPrint = () => {
+    setCurrentView("labelPrint");
+    setLabelSelectMode("queue");
+    setSelectedLabelSpecimens(new Set());
+  };
+
+  const handleAddToLabelQueue = (specimenIds: string[]) => {
+    const existingIds = new Set(labelPrintQueue.map((item) => item.id));
+    const newItems: LabelPrintItem[] = [];
+    specimenIds.forEach((id) => {
+      if (existingIds.has(id)) return;
+      const specimen = queue.find((s) => s.id === id);
+      if (specimen) {
+        newItems.push(specimenToLabelItem(specimen));
+      }
+    });
+    if (newItems.length > 0) {
+      persistLabelQueue([...labelPrintQueue, ...newItems]);
+    }
+    setSelectedLabelSpecimens(new Set());
+  };
+
+  const handleRemoveFromLabelQueue = (itemIds: string[]) => {
+    const updated = labelPrintQueue.filter((item) => !itemIds.includes(item.id));
+    persistLabelQueue(updated);
+  };
+
+  const handleClearLabelQueue = () => {
+    if (window.confirm("确认清空打印队列？")) {
+      persistLabelQueue([]);
+    }
+  };
+
+  const handleSortLabelQueue = (sortType: LabelSortType) => {
+    setLabelSortType(sortType);
+  };
+
+  const handleToggleLabelSelect = (specimenId: string) => {
+    setSelectedLabelSpecimens((prev) => {
+      const next = new Set(prev);
+      if (next.has(specimenId)) {
+        next.delete(specimenId);
+      } else {
+        next.add(specimenId);
+      }
+      return next;
+    });
+  };
+
+  const handleSelectAllLabelSpecimens = () => {
+    const list = storedSpecimens;
+    if (selectedLabelSpecimens.size === list.length) {
+      setSelectedLabelSpecimens(new Set());
+    } else {
+      setSelectedLabelSpecimens(new Set(list.map((s) => s.id)));
+    }
+  };
+
+  const handlePrintLabels = () => {
+    setShowLabelPreview(true);
+  };
+
+  if (!labelQueueLoadedRef.current) {
+    initializeLabelQueue();
   }
 
   useMemo(() => {
@@ -2288,6 +2453,16 @@ function App() {
                 <small>查看各采集地点汇总信息</small>
               </div>
               <span className="location-task-count">{locationProfiles.length}</span>
+            </button>
+          </div>
+          <div className="side-task-entry">
+            <button className="label-task-entry" onClick={handleOpenLabelPrint}>
+              <span className="label-task-icon">🏷️</span>
+              <div className="label-task-text">
+                <strong>馆藏标签打印</strong>
+                <small>选择标本生成标签并打印</small>
+              </div>
+              <span className="label-task-count">{labelPrintQueue.length}</span>
             </button>
           </div>
         </aside>
@@ -4300,6 +4475,362 @@ function App() {
     );
   };
 
+  const renderLabelPrintView = () => {
+    if (!labelQueueLoadedRef.current) {
+      initializeLabelQueue();
+    }
+
+    const labelQueueIds = new Set(labelPrintQueue.map((item) => item.id));
+
+    return (
+      <>
+        <section className="hero hero-label">
+          <p className="breadcrumbs">
+            <button className="link-btn" onClick={handleBackToMain}>
+              ← 返回主页
+            </button>
+            <span className="sep">/</span>
+            <span>标签打印队列</span>
+          </p>
+          <h1>🏷️ 馆藏标签打印队列</h1>
+          <span>从已入库记录中选择标本生成馆藏标签，支持打印前预览、批量移除、按柜位排序，并自动保留最近一次打印队列</span>
+        </section>
+
+        <section className="metrics label-metrics">
+          <article className="metric-stored">
+            <small>已入库标本</small>
+            <strong>{storedSpecimens.length}</strong>
+          </article>
+          <article className="metric-queue">
+            <small>打印队列</small>
+            <strong>{labelPrintQueue.length}</strong>
+          </article>
+          <article className="metric-selected">
+            <small>已选择</small>
+            <strong>{selectedLabelSpecimens.size}</strong>
+          </article>
+          <article className="metric-sort">
+            <small>当前排序</small>
+            <strong>
+              {labelSortType === "default"
+                ? "默认"
+                : labelSortType === "storage"
+                ? "按柜位"
+                : "按采集号"}
+            </strong>
+          </article>
+        </section>
+
+        <section className="panel">
+          <div className="heading">
+            <div>
+              <p>选择标本</p>
+              <h2>
+                已入库标本清单
+                <span className="preview-summary">
+                  {" "}· 共 {storedSpecimens.length} 份已入库标本
+                  {selectedLabelSpecimens.size > 0 &&
+                    `，已选 ${selectedLabelSpecimens.size} 份`}
+                </span>
+              </h2>
+            </div>
+            <div className="label-toolbar">
+              {storedSpecimens.length > 0 && (
+                <button
+                  className="btn-outline btn-small"
+                  onClick={handleSelectAllLabelSpecimens}
+                >
+                  {selectedLabelSpecimens.size === storedSpecimens.length
+                    ? "取消全选"
+                    : "全选"}
+                </button>
+              )}
+              <button
+                className="primary btn-small"
+                onClick={() =>
+                  handleAddToLabelQueue(Array.from(selectedLabelSpecimens))
+                }
+                disabled={selectedLabelSpecimens.size === 0}
+              >
+                加入打印队列 ({selectedLabelSpecimens.size})
+              </button>
+            </div>
+          </div>
+
+          {storedSpecimens.length === 0 ? (
+            <div className="empty-state">暂无已入库的标本</div>
+          ) : (
+            <div className="label-specimen-list">
+              {storedSpecimens.map((record, index) => {
+                const isSelected = selectedLabelSpecimens.has(record.id);
+                const inQueue = labelQueueIds.has(record.id);
+                return (
+                  <label
+                    key={record.id}
+                    className={`label-specimen-card ${
+                      isSelected ? "card-selected" : ""
+                    } ${inQueue ? "card-in-queue" : ""}`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => handleToggleLabelSelect(record.id)}
+                    />
+                    <div className="card-index">{String(index + 1).padStart(2, "0")}</div>
+                    <div className="card-body">
+                      <div className="card-title">
+                        <h3>{record.collectionNo || "未编号"}</h3>
+                        {record.family && (
+                          <span className="family-tag">{record.family}</span>
+                        )}
+                        {inQueue && (
+                          <span className="in-queue-tag">已在队列</span>
+                        )}
+                      </div>
+                      <p className="card-species">
+                        <strong>{record.speciesName || "物种待定"}</strong>
+                      </p>
+                      <div className="card-meta">
+                        {record.collectionLocation && (
+                          <span>📍 {record.collectionLocation}</span>
+                        )}
+                        {record.collector && <span>👤 {record.collector}</span>}
+                        {record.altitude && <span>⛰️ {record.altitude}</span>}
+                      </div>
+                      {record.storagePosition && (
+                        <div className="card-storage">
+                          📦 {formatStoragePosition(record.storagePosition)}
+                          <span className="storage-detail-inline">
+                            {" "}
+                            {formatStorageDisplay(record.storagePosition)
+                              .replace(/^\d楼 · /, "")
+                              .replace(/ · 格位\d+$/, "")}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
+        <section className="panel">
+          <div className="heading">
+            <div>
+              <p>打印队列</p>
+              <h2>
+                待打印标签队列
+                <span className="preview-summary">
+                  {" "}· 共 {sortedLabelQueue.length} 份
+                </span>
+              </h2>
+            </div>
+            <div className="label-toolbar">
+              <div className="chips">
+                <button
+                  className={labelSortType === "default" ? "chip-active" : ""}
+                  onClick={() => handleSortLabelQueue("default")}
+                >
+                  默认排序
+                </button>
+                <button
+                  className={labelSortType === "storage" ? "chip-active" : ""}
+                  onClick={() => handleSortLabelQueue("storage")}
+                >
+                  按柜位排序
+                </button>
+                <button
+                  className={labelSortType === "collectionNo" ? "chip-active" : ""}
+                  onClick={() => handleSortLabelQueue("collectionNo")}
+                >
+                  按采集号
+                </button>
+              </div>
+              <button
+                className="btn-outline btn-small"
+                onClick={handleClearLabelQueue}
+                disabled={labelPrintQueue.length === 0}
+              >
+                清空队列
+              </button>
+              <button
+                className="primary btn-small"
+                onClick={handlePrintLabels}
+                disabled={labelPrintQueue.length === 0}
+              >
+                🖨️ 预览并打印
+              </button>
+            </div>
+          </div>
+
+          {sortedLabelQueue.length === 0 ? (
+            <div className="empty-state">
+              打印队列为空，请从上方已入库标本中选择加入
+            </div>
+          ) : (
+            <div className="label-queue-list">
+              {sortedLabelQueue.map((item, index) => (
+                <div key={item.id} className="label-queue-item">
+                  <div className="queue-item-index">
+                    <b>{String(index + 1).padStart(2, "0")}</b>
+                  </div>
+                  <div className="queue-item-content">
+                    <div className="queue-item-header">
+                      <h3>{item.collectionNo}</h3>
+                      <span className={`status-badge ${
+                        item.identifyStatus === "已鉴定"
+                          ? "badge-done"
+                          : "badge-review"
+                      }`}>
+                        {item.identifyStatus}
+                      </span>
+                    </div>
+                    <p className="queue-item-species">
+                      <strong>{item.speciesName || "物种待定"}</strong>
+                    </p>
+                    <div className="queue-item-meta">
+                      <span>📍 {item.collectionLocation || "—"}</span>
+                      <span>⛰️ {item.altitude || "—"}</span>
+                      <span>👤 {item.collector || "—"}</span>
+                    </div>
+                    {item.storagePosition && (
+                      <div className="queue-item-storage">
+                        📦 {formatStoragePosition(item.storagePosition)}
+                        <span className="storage-detail-inline">
+                          {" "}
+                          {formatStorageDisplay(item.storagePosition)
+                            .replace(/^\d楼 · /, "")
+                            .replace(/ · 格位\d+$/, "")}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    className="queue-item-remove"
+                    onClick={() => handleRemoveFromLabelQueue([item.id])}
+                    title="从队列中移除"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {showLabelPreview && (
+          <div className="label-preview-overlay" onClick={() => setShowLabelPreview(false)}>
+            <div className="label-preview-modal" onClick={(e) => e.stopPropagation()}>
+              <div className="label-preview-header">
+                <div>
+                  <p className="conflict-breadcrumb">标签预览</p>
+                  <h2>
+                    🖨️ 馆藏标签预览
+                    <span className="conflict-progress">
+                      共 {sortedLabelQueue.length} 份标签
+                    </span>
+                  </h2>
+                </div>
+                <button
+                  className="conflict-close"
+                  onClick={() => setShowLabelPreview(false)}
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="label-preview-toolbar">
+                <div className="label-layout-options">
+                  <span className="section-label">布局：</span>
+                  <div className="chips">
+                    <button className="chip-active">单列</button>
+                    <button>双列</button>
+                    <button>三列</button>
+                  </div>
+                </div>
+                <div className="label-print-actions">
+                  <button
+                    className="btn-outline"
+                    onClick={() => window.print()}
+                  >
+                    🖨️ 打印
+                  </button>
+                </div>
+              </div>
+
+              <div className="label-preview-content">
+                {sortedLabelQueue.map((item, index) => (
+                  <div key={item.id} className="specimen-label">
+                    <div className="label-header">
+                      <div className="label-collection-no">
+                        {item.collectionNo}
+                      </div>
+                      <div className="label-storage">
+                        {item.storagePosition
+                          ? formatStoragePosition(item.storagePosition)
+                          : "—"}
+                      </div>
+                    </div>
+                    <div className="label-species">{item.speciesName || "物种待定"}</div>
+                    {item.family && (
+                      <div className="label-family">{item.family}</div>
+                    )}
+                    <div className="label-info">
+                      <div className="label-info-row">
+                        <span className="label-info-label">采集地点：</span>
+                        <span className="label-info-value">
+                          {item.collectionLocation || "—"}
+                        </span>
+                      </div>
+                      <div className="label-info-row">
+                        <span className="label-info-label">海拔：</span>
+                        <span className="label-info-value">
+                          {item.altitude || "—"}
+                        </span>
+                      </div>
+                      <div className="label-info-row">
+                        <span className="label-info-label">采集人：</span>
+                        <span className="label-info-value">
+                          {item.collector || "—"}
+                        </span>
+                      </div>
+                      <div className="label-info-row">
+                        <span className="label-info-label">鉴定状态：</span>
+                        <span className="label-info-value">
+                          {item.identifyStatus}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="label-footer">
+                      <span className="label-index">第 {index + 1} 张</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="label-preview-footer">
+                <button
+                  className="ghost-btn"
+                  onClick={() => setShowLabelPreview(false)}
+                >
+                  关闭
+                </button>
+                <button
+                  className="primary"
+                  onClick={() => window.print()}
+                >
+                  🖨️ 打印全部标签
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </>
+    );
+  };
+
   const renderConflictPanel = () => {
     if (!showConflictPanel || !currentConflict) return null;
 
@@ -4501,6 +5032,7 @@ function App() {
       {currentView === "specimenDetail" && renderDetailView()}
       {currentView === "locationList" && renderLocationListView()}
       {currentView === "locationDetail" && renderLocationDetailView()}
+      {currentView === "labelPrint" && renderLabelPrintView()}
       {renderConflictPanel()}
     </main>
   );
