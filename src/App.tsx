@@ -190,8 +190,8 @@ function getBlockingReasons(specimen: SpecimenRecord, targetStatus: SpecimenReco
   }
 
   if (targetStatus === "已入库" && specimen.status === "需补照") {
-    if (specimen.missingPhotoTypes.length > 0) {
-      reasons.push(`还有 ${specimen.missingPhotoTypes.length} 种照片未补拍完成`);
+    if (specimen.missingPhotoTypes.length === 0) {
+      reasons.push("当前没有缺失的照片需要补照");
     }
   }
 
@@ -1257,6 +1257,7 @@ function App() {
   const [selectedStatusSpecimenId, setSelectedStatusSpecimenId] = useState<string | null>(null);
   const [showStatusTransitionModal, setShowStatusTransitionModal] = useState<{ specimenId: string; targetStatus: SpecimenRecord["status"] } | null>(null);
   const [statusTransitionRemark, setStatusTransitionRemark] = useState<string>("");
+  const [statusTransitionPhotoTypes, setStatusTransitionPhotoTypes] = useState<string[]>([]);
 
   const initializeDrafts = () => {
     if (draftsLoadedRef.current) return;
@@ -1799,11 +1800,20 @@ function App() {
   const handleOpenStatusTransition = (specimenId: string, targetStatus: SpecimenRecord["status"]) => {
     setShowStatusTransitionModal({ specimenId, targetStatus });
     setStatusTransitionRemark("");
+    const specimen = queue.find((s) => s.id === specimenId);
+    if (targetStatus === "需补照") {
+      setStatusTransitionPhotoTypes([]);
+    } else if (targetStatus === "已入库" && specimen?.status === "需补照") {
+      setStatusTransitionPhotoTypes([...specimen.missingPhotoTypes]);
+    } else {
+      setStatusTransitionPhotoTypes([]);
+    }
   };
 
   const handleCloseStatusTransition = () => {
     setShowStatusTransitionModal(null);
     setStatusTransitionRemark("");
+    setStatusTransitionPhotoTypes([]);
   };
 
   const handleStatusTransition = () => {
@@ -1814,6 +1824,13 @@ function App() {
 
     const blockingReasons = getBlockingReasons(specimen, targetStatus);
     if (blockingReasons.length > 0) return;
+
+    if (targetStatus === "需补照" && statusTransitionPhotoTypes.length === 0) {
+      return;
+    }
+    if (targetStatus === "已入库" && specimen.status === "需补照" && statusTransitionPhotoTypes.length === 0) {
+      return;
+    }
 
     const transition = STATUS_TRANSITIONS.find((t) => t.from === specimen.status && t.to === targetStatus);
     if (!transition) return;
@@ -1839,6 +1856,37 @@ function App() {
         }
         if (targetStatus === "已入库" && s.status === "待鉴定") {
           updated.identifyStatus = "已鉴定";
+        }
+        if (targetStatus === "需补照" && statusTransitionPhotoTypes.length > 0) {
+          const newPhotoRecord: PhotoRecord = {
+            id: generateId(),
+            timestamp: formatNow(),
+            operator: "当前用户",
+            action: "标记需补照",
+            photoTypes: statusTransitionPhotoTypes,
+            remark: statusTransitionRemark || undefined,
+          };
+          updated.missingPhotoTypes = statusTransitionPhotoTypes;
+          updated.photoRecords = [...s.photoRecords, newPhotoRecord];
+          updated.photoRemark = statusTransitionRemark || s.photoRemark;
+        }
+        if (targetStatus === "已入库" && s.status === "需补照") {
+          const completedTypes = statusTransitionPhotoTypes;
+          const remainingTypes = s.missingPhotoTypes.filter((t) => !completedTypes.includes(t));
+          const newPhotoRecord: PhotoRecord = {
+            id: generateId(),
+            timestamp: formatNow(),
+            operator: "当前用户",
+            action: "补照完成",
+            photoTypes: completedTypes,
+            remark: statusTransitionRemark || undefined,
+          };
+          updated.missingPhotoTypes = remainingTypes;
+          updated.photoRecords = [...s.photoRecords, newPhotoRecord];
+          updated.photoRemark = statusTransitionRemark || s.photoRemark;
+          if (remainingTypes.length > 0) {
+            updated.status = "需补照";
+          }
         }
         return updated;
       })
@@ -4438,6 +4486,64 @@ function App() {
                   </div>
                 </div>
 
+                {selectedSpecimen.status === "需补照" && (
+                  <div className="photo-status-section">
+                    <p className="section-subtitle">照片补照状态</p>
+                    <div className="photo-status-card">
+                      <div className="photo-status-header">
+                        <span className="photo-status-icon">📷</span>
+                        <div>
+                          <p className="photo-status-title">
+                            缺失照片类型 ({selectedSpecimen.missingPhotoTypes.length}/6)
+                          </p>
+                          <p className="photo-status-subtitle">
+                            {selectedSpecimen.missingPhotoTypes.length === 0
+                              ? "所有照片已补照完成"
+                              : `还需补拍 ${selectedSpecimen.missingPhotoTypes.length} 种照片`}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="photo-type-tags">
+                        {PHOTO_TYPES.map((type) => {
+                          const isMissing = selectedSpecimen.missingPhotoTypes.includes(type);
+                          return (
+                            <span
+                              key={type}
+                              className={`photo-type-tag ${isMissing ? "tag-missing" : "tag-done"}`}
+                            >
+                              {isMissing ? "⚠️ " : "✓ "}
+                              {type}
+                            </span>
+                          );
+                        })}
+                      </div>
+                      {selectedSpecimen.photoRecords.length > 0 && (
+                        <div className="photo-history-mini">
+                          <p className="photo-history-title">补照处理记录</p>
+                          {selectedSpecimen.photoRecords.slice().reverse().slice(0, 3).map((pr) => (
+                            <div key={pr.id} className="photo-history-item">
+                              <div className="photo-history-header">
+                                <span className={`photo-action-badge ${pr.action === "标记需补照" ? "action-warn" : "action-success"}`}>
+                                  {pr.action}
+                                </span>
+                                <span className="photo-history-time">{pr.timestamp}</span>
+                              </div>
+                              {pr.photoTypes && pr.photoTypes.length > 0 && (
+                                <p className="photo-history-types">
+                                  {pr.photoTypes.join("、")}
+                                </p>
+                              )}
+                              {pr.remark && (
+                                <p className="photo-history-remark">📝 {pr.remark}</p>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 <div className="status-actions-section">
                   <p className="section-subtitle">可执行动作</p>
                   <div className="action-buttons-group">
@@ -4533,6 +4639,13 @@ function App() {
           if (!specimen || !transition) return null;
           const canDo = canTransitionTo(specimen, transition.to);
           const reasons = getBlockingReasons(specimen, transition.to);
+          let canConfirm = canDo;
+          if (transition.to === "需补照") {
+            canConfirm = canDo && statusTransitionPhotoTypes.length > 0;
+          }
+          if (transition.to === "已入库" && specimen.status === "需补照") {
+            canConfirm = canDo && statusTransitionPhotoTypes.length > 0;
+          }
 
           return (
             <div className="modal-overlay" onClick={handleCloseStatusTransition}>
@@ -4566,6 +4679,68 @@ function App() {
                     </div>
                   )}
 
+                  {transition.to === "需补照" && (
+                    <div className="form-row">
+                      <label>缺失照片类型 <span className="required">*</span></label>
+                      <p className="form-hint">请选择需要补拍的照片类型</p>
+                      <div className="photo-type-grid">
+                        {PHOTO_TYPES.map((type) => (
+                          <label key={type} className="photo-type-checkbox">
+                            <input
+                              type="checkbox"
+                              checked={statusTransitionPhotoTypes.includes(type)}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setStatusTransitionPhotoTypes((prev) => [...prev, type]);
+                                } else {
+                                  setStatusTransitionPhotoTypes((prev) => prev.filter((t) => t !== type));
+                                }
+                              }}
+                            />
+                            <span>{type}</span>
+                          </label>
+                        ))}
+                      </div>
+                      {statusTransitionPhotoTypes.length === 0 && (
+                        <p className="error-text">请至少选择一种缺失的照片类型</p>
+                      )}
+                    </div>
+                  )}
+
+                  {transition.to === "已入库" && specimen.status === "需补照" && specimen.missingPhotoTypes.length > 0 && (
+                    <div className="form-row">
+                      <label>已补照完成的照片类型 <span className="required">*</span></label>
+                      <p className="form-hint">勾选已完成补拍的照片类型（未勾选的将保留在需补照列表中）</p>
+                      <div className="photo-type-grid">
+                        {specimen.missingPhotoTypes.map((type) => (
+                          <label key={type} className="photo-type-checkbox">
+                            <input
+                              type="checkbox"
+                              checked={statusTransitionPhotoTypes.includes(type)}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setStatusTransitionPhotoTypes((prev) => [...prev, type]);
+                                } else {
+                                  setStatusTransitionPhotoTypes((prev) => prev.filter((t) => t !== type));
+                                }
+                              }}
+                            />
+                            <span>{type}</span>
+                          </label>
+                        ))}
+                      </div>
+                      <p className="form-hint" style={{ marginTop: "8px" }}>
+                        剩余未补照：<strong>{specimen.missingPhotoTypes.length - statusTransitionPhotoTypes.length}</strong> 种
+                        {specimen.missingPhotoTypes.length - statusTransitionPhotoTypes.length === 0 && (
+                          <span style={{ color: "var(--success-color)" }}>（全部完成后将自动入库）</span>
+                        )}
+                      </p>
+                      {statusTransitionPhotoTypes.length === 0 && (
+                        <p className="error-text">请至少选择一种已补照完成的照片类型</p>
+                      )}
+                    </div>
+                  )}
+
                   <div className="form-row">
                     <label>备注信息</label>
                     <textarea
@@ -4583,9 +4758,11 @@ function App() {
                   <button
                     className="primary"
                     onClick={handleStatusTransition}
-                    disabled={!canDo}
+                    disabled={!canConfirm}
                   >
-                    确认流转
+                    {transition.to === "已入库" && specimen.status === "需补照" && statusTransitionPhotoTypes.length > 0 && statusTransitionPhotoTypes.length < specimen.missingPhotoTypes.length
+                      ? "确认部分完成"
+                      : "确认流转"}
                   </button>
                 </div>
               </div>
