@@ -1112,8 +1112,8 @@ function App() {
   const [labelPrintQueue, setLabelPrintQueue] = useState<LabelPrintItem[]>([]);
   const [labelSortType, setLabelSortType] = useState<LabelSortType>("default");
   const [showLabelPreview, setShowLabelPreview] = useState(false);
-  const [labelSelectMode, setLabelSelectMode] = useState<"queue" | "storage">("queue");
   const [selectedLabelSpecimens, setSelectedLabelSpecimens] = useState<Set<string>>(new Set());
+  const [selectedQueueItems, setSelectedQueueItems] = useState<Set<string>>(new Set());
   const labelQueueLoadedRef = useRef(false);
 
   const initializeDrafts = () => {
@@ -1338,6 +1338,35 @@ function App() {
   const handleClearLabelQueue = () => {
     if (window.confirm("确认清空打印队列？")) {
       persistLabelQueue([]);
+      setSelectedQueueItems(new Set());
+    }
+  };
+
+  const handleToggleQueueItemSelect = (itemId: string) => {
+    setSelectedQueueItems((prev) => {
+      const next = new Set(prev);
+      if (next.has(itemId)) {
+        next.delete(itemId);
+      } else {
+        next.add(itemId);
+      }
+      return next;
+    });
+  };
+
+  const handleSelectAllQueueItems = () => {
+    if (selectedQueueItems.size === sortedLabelQueue.length) {
+      setSelectedQueueItems(new Set());
+    } else {
+      setSelectedQueueItems(new Set(sortedLabelQueue.map((item) => item.id)));
+    }
+  };
+
+  const handleBatchRemoveFromQueue = () => {
+    if (selectedQueueItems.size === 0) return;
+    if (window.confirm(`确认从队列中移除选中的 ${selectedQueueItems.size} 份标签？`)) {
+      handleRemoveFromLabelQueue(Array.from(selectedQueueItems));
+      setSelectedQueueItems(new Set());
     }
   };
 
@@ -1369,6 +1398,10 @@ function App() {
   const handlePrintLabels = () => {
     setShowLabelPreview(true);
   };
+
+  if (!draftsLoadedRef.current) {
+    initializeDrafts();
+  }
 
   if (!labelQueueLoadedRef.current) {
     initializeLabelQueue();
@@ -4628,6 +4661,25 @@ function App() {
               </h2>
             </div>
             <div className="label-toolbar">
+              {labelPrintQueue.length > 0 && (
+                <>
+                  <button
+                    className="btn-outline btn-small"
+                    onClick={handleSelectAllQueueItems}
+                  >
+                    {selectedQueueItems.size === sortedLabelQueue.length
+                      ? "取消全选"
+                      : "全选队列"}
+                  </button>
+                  <button
+                    className="btn-outline btn-small btn-danger-outline"
+                    onClick={handleBatchRemoveFromQueue}
+                    disabled={selectedQueueItems.size === 0}
+                  >
+                    批量移除 ({selectedQueueItems.size})
+                  </button>
+                </>
+              )}
               <div className="chips">
                 <button
                   className={labelSortType === "default" ? "chip-active" : ""}
@@ -4671,8 +4723,16 @@ function App() {
             </div>
           ) : (
             <div className="label-queue-list">
-              {sortedLabelQueue.map((item, index) => (
-                <div key={item.id} className="label-queue-item">
+              {sortedLabelQueue.map((item, index) => {
+                const isSelected = selectedQueueItems.has(item.id);
+                return (
+                <div key={item.id} className={`label-queue-item ${isSelected ? "queue-item-selected" : ""}`}>
+                  <input
+                    type="checkbox"
+                    className="queue-item-checkbox"
+                    checked={isSelected}
+                    onChange={() => handleToggleQueueItemSelect(item.id)}
+                  />
                   <div className="queue-item-index">
                     <b>{String(index + 1).padStart(2, "0")}</b>
                   </div>
@@ -4709,13 +4769,22 @@ function App() {
                   </div>
                   <button
                     className="queue-item-remove"
-                    onClick={() => handleRemoveFromLabelQueue([item.id])}
+                    onClick={() => {
+                      handleRemoveFromLabelQueue([item.id]);
+                      if (selectedQueueItems.has(item.id)) {
+                        setSelectedQueueItems((prev) => {
+                          const next = new Set(prev);
+                          next.delete(item.id);
+                          return next;
+                        });
+                      }
+                    }}
                     title="从队列中移除"
                   >
                     ✕
                   </button>
                 </div>
-              ))}
+              )})}
             </div>
           )}
         </section>

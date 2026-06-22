@@ -3813,6 +3813,39 @@ textarea {
   border-color: #cbd5e1;
 }
 
+.label-queue-item.queue-item-selected {
+  background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
+  border-color: #93c5fd;
+}
+
+.queue-item-checkbox {
+  margin-top: 8px;
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+  accent-color: var(--primary);
+  flex-shrink: 0;
+}
+
+.btn-danger-outline {
+  color: var(--danger);
+  border-color: #fecaca;
+  background: #fff;
+}
+
+.btn-danger-outline:hover:not(:disabled) {
+  background: #fef2f2;
+  border-color: #fca5a5;
+}
+
+.btn-danger-outline:disabled {
+  color: #fca5a5;
+  border-color: #fee2e2;
+  background: #fff;
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 .queue-item-index {
   width: 36px;
   height: 36px;
