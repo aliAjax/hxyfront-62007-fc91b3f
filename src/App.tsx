@@ -1310,7 +1310,6 @@ function App() {
 
   const handleOpenLabelPrint = () => {
     setCurrentView("labelPrint");
-    setLabelSelectMode("queue");
     setSelectedLabelSpecimens(new Set());
   };
 
