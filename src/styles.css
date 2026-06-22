@@ -3354,3 +3354,231 @@ textarea {
   }
 }
 
+.draft-actions-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.draft-new-btn {
+  background: color-mix(in srgb, var(--accent) 8%, #fff);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  color: #854d0e;
+  font-weight: 600;
+}
+
+.draft-new-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 14%, #fff);
+  border-color: var(--accent);
+  color: #713f12;
+}
+
+.draft-save-status {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 12px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.draft-status-saving {
+  color: var(--warn);
+}
+
+.draft-status-saved {
+  color: var(--primary);
+}
+
+.draft-panel {
+  margin-bottom: 18px;
+  padding: 16px;
+  background: linear-gradient(135deg, #fef9c3, #fefdf8);
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--border));
+  border-radius: 10px;
+}
+
+.draft-panel-header {
+  margin-bottom: 12px;
+}
+
+.draft-panel-title {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #854d0e;
+}
+
+.draft-panel-title small {
+  font-size: 11px;
+  color: #a16207;
+  font-weight: 400;
+}
+
+.draft-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 10px;
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.draft-card {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  padding: 12px;
+  background: #fff;
+  border: 2px solid color-mix(in srgb, var(--accent) 20%, var(--border));
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.draft-card:hover {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+  background: linear-gradient(135deg, #fffbeb, #fff);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(202, 138, 4, 0.1);
+}
+
+.draft-card.draft-card-active {
+  border-color: var(--accent);
+  background: linear-gradient(135deg, #fef9c3, #fff);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent);
+}
+
+.draft-card-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.draft-card-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.draft-card-title {
+  font-weight: 700;
+  color: #1e293b;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.draft-card-active .draft-card-title {
+  color: #854d0e;
+}
+
+.draft-card-completion {
+  font-size: 11px;
+  font-weight: 700;
+  color: #a16207;
+  background: color-mix(in srgb, var(--accent) 12%, #fff);
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.draft-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  font-size: 11px;
+  color: #64748b;
+  align-items: center;
+}
+
+.draft-card-time {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 10px;
+  color: #94a3b8;
+}
+
+.draft-card-no {
+  font-weight: 600;
+  color: var(--secondary);
+  padding: 1px 6px;
+  background: color-mix(in srgb, var(--secondary) 8%, #fff);
+  border-radius: 4px;
+}
+
+.draft-card-species {
+  font-weight: 600;
+  color: var(--primary);
+}
+
+.draft-card-loc {
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 140px;
+}
+
+.draft-progress-bar {
+  height: 4px;
+  background: #fef3c7;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.draft-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--warn));
+  border-radius: 999px;
+  transition: width 0.3s ease;
+}
+
+.draft-delete-btn {
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  border-radius: 6px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: #94a3b8;
+  font-size: 14px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  align-self: flex-start;
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.draft-delete-btn:hover {
+  background: #fee2e2;
+  border-color: #fecaca;
+  color: var(--danger);
+}
+
+@media (max-width: 768px) {
+  .draft-actions-bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .draft-list {
+    grid-template-columns: 1fr;
+    max-height: none;
+  }
+
+  .draft-save-status {
+    display: block;
+    margin-left: 0;
+    margin-top: 8px;
+  }
+}
+

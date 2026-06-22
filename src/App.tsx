@@ -113,12 +113,128 @@ const FLOOR_OPTIONS = [
   { value: "3F", label: "3楼 · 珍贵/外调区" },
 ];
 
+interface Draft {
+  id: string;
+  createdAt: string;
+  updatedAt: string;
+  collectionNo: string;
+  speciesName: string;
+  collectionLocation: string;
+  altitude: string;
+  collector: string;
+  habitat: string;
+  pressStatus: string;
+  identifyStatus: string;
+  storagePosition: StoragePosition;
+}
+
+const DRAFT_STORAGE_KEY = "hxyfront_specimen_drafts_v1";
+const AUTO_SAVE_DEBOUNCE_MS = 800;
+
+const PRESS_STATUS_OPTIONS = ["待压制", "压制中", "已压制"];
+const IDENTIFY_STATUS_OPTIONS = ["待鉴定", "鉴定中", "已鉴定"];
+
+const EMPTY_DRAFT_FORM = {
+  collectionNo: "",
+  speciesName: "",
+  collectionLocation: "",
+  altitude: "",
+  collector: "",
+  habitat: "",
+  pressStatus: "待压制",
+  identifyStatus: "待鉴定",
+};
+
 const EMPTY_POSITION: StoragePosition = {
   floor: "",
   cabinet: "",
   shelf: "",
   slot: "",
 };
+
+function loadDrafts(): Draft[] {
+  try {
+    const raw = localStorage.getItem(DRAFT_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (d) => d && typeof d.id === "string" && typeof d.updatedAt === "string"
+    );
+  } catch {
+    return [];
+  }
+}
+
+function saveDrafts(drafts: Draft[]): void {
+  try {
+    localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(drafts));
+  } catch {
+    /* silently ignore quota errors */
+  }
+}
+
+function createEmptyDraft(): Draft {
+  return {
+    id: generateId(),
+    createdAt: formatNow(),
+    updatedAt: formatNow(),
+    collectionNo: "",
+    speciesName: "",
+    collectionLocation: "",
+    altitude: "",
+    collector: "",
+    habitat: "",
+    pressStatus: "待压制",
+    identifyStatus: "待鉴定",
+    storagePosition: { ...EMPTY_POSITION },
+  };
+}
+
+function isDraftMeaningful(d: Draft): boolean {
+  return (
+    d.collectionNo.trim() !== "" ||
+    d.speciesName.trim() !== "" ||
+    d.collectionLocation.trim() !== "" ||
+    d.altitude.trim() !== "" ||
+    d.collector.trim() !== "" ||
+    d.habitat.trim() !== "" ||
+    d.storagePosition.floor !== "" ||
+    d.storagePosition.cabinet !== "" ||
+    d.storagePosition.shelf !== "" ||
+    d.storagePosition.slot !== "" ||
+    d.pressStatus !== "待压制" ||
+    d.identifyStatus !== "待鉴定"
+  );
+}
+
+function getDraftTitle(d: Draft): string {
+  if (d.collectionNo.trim()) return d.collectionNo.trim();
+  if (d.speciesName.trim()) return d.speciesName.trim();
+  if (d.collectionLocation.trim()) return d.collectionLocation.trim();
+  return "未命名草稿";
+}
+
+function getDraftCompletion(d: Draft): { filled: number; total: number } {
+  const fields = [
+    d.collectionNo,
+    d.speciesName,
+    d.collectionLocation,
+    d.altitude,
+    d.collector,
+    d.habitat,
+    d.pressStatus !== "待压制" ? "x" : "",
+    d.identifyStatus !== "待鉴定" ? "x" : "",
+    d.storagePosition.floor && d.storagePosition.cabinet &&
+    d.storagePosition.shelf && d.storagePosition.slot
+      ? "x"
+      : "",
+  ];
+  return {
+    filled: fields.filter((f) => f.trim() !== "").length,
+    total: fields.length,
+  };
+}
 
 function formatStoragePosition(pos: StoragePosition): string {
   if (!pos.floor || !pos.cabinet || !pos.shelf || !pos.slot) {
@@ -905,15 +1021,14 @@ function App() {
   const [detailFromLocation, setDetailFromLocation] = useState<boolean>(false);
 
   const [showSingleForm, setShowSingleForm] = useState(false);
-  const [singleForm, setSingleForm] = useState({
-    collectionNo: "",
-    speciesName: "",
-    collectionLocation: "",
-    altitude: "",
-    collector: "",
-    habitat: "",
-  });
+  const [singleForm, setSingleForm] = useState({ ...EMPTY_DRAFT_FORM });
   const [singlePosition, setSinglePosition] = useState<StoragePosition>({ ...EMPTY_POSITION });
+
+  const [drafts, setDrafts] = useState<Draft[]>([]);
+  const [currentDraftId, setCurrentDraftId] = useState<string | null>(null);
+  const [draftSaveStatus, setDraftSaveStatus] = useState<"idle" | "saving" | "saved">("idle");
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const draftsLoadedRef = useRef(false);
 
   const [previewPositions, setPreviewPositions] = useState<Record<string, StoragePosition>>({});
   const [batchPosition, setBatchPosition] = useState<StoragePosition>({ ...EMPTY_POSITION });
@@ -924,6 +1039,204 @@ function App() {
   const [conflictSource, setConflictSource] = useState<"batch" | "single">("batch");
   const [singleConflictRecord, setSingleConflictRecord] = useState<SpecimenRecord | null>(null);
   const [conflictCopySuffix, setConflictCopySuffix] = useState("-副本1");
+
+  const initializeDrafts = () => {
+    if (draftsLoadedRef.current) return;
+    draftsLoadedRef.current = true;
+    const loaded = loadDrafts();
+    const meaningful = loaded.filter(isDraftMeaningful).sort(
+      (a, b) => b.updatedAt.localeCompare(a.updatedAt)
+    );
+    setDrafts(meaningful);
+    saveDrafts(meaningful);
+
+    if (showSingleForm) {
+      if (meaningful.length > 0) {
+        const latest = meaningful[0];
+        setCurrentDraftId(latest.id);
+        setSingleForm({
+          collectionNo: latest.collectionNo,
+          speciesName: latest.speciesName,
+          collectionLocation: latest.collectionLocation,
+          altitude: latest.altitude,
+          collector: latest.collector,
+          habitat: latest.habitat,
+          pressStatus: latest.pressStatus,
+          identifyStatus: latest.identifyStatus,
+        });
+        setSinglePosition({ ...latest.storagePosition });
+      } else {
+        const nd = createEmptyDraft();
+        setCurrentDraftId(nd.id);
+      }
+    }
+  };
+
+  const persistDrafts = (updated: Draft[]) => {
+    const meaningful = updated.filter(isDraftMeaningful);
+    setDrafts(meaningful);
+    saveDrafts(meaningful);
+  };
+
+  const flushAutoSave = () => {
+    if (!currentDraftId) return;
+    const draft: Draft = {
+      id: currentDraftId,
+      createdAt: formatNow(),
+      updatedAt: formatNow(),
+      collectionNo: singleForm.collectionNo,
+      speciesName: singleForm.speciesName,
+      collectionLocation: singleForm.collectionLocation,
+      altitude: singleForm.altitude,
+      collector: singleForm.collector,
+      habitat: singleForm.habitat,
+      pressStatus: singleForm.pressStatus,
+      identifyStatus: singleForm.identifyStatus,
+      storagePosition: { ...singlePosition },
+    };
+
+    setDrafts((prev) => {
+      const existing = prev.find((d) => d.id === currentDraftId);
+      let updated: Draft[];
+      if (existing) {
+        updated = prev.map((d) =>
+          d.id === currentDraftId ? { ...draft, createdAt: existing.createdAt } : d
+        );
+      } else {
+        updated = [draft, ...prev];
+      }
+      const meaningful = updated.filter(isDraftMeaningful).sort(
+        (a, b) => b.updatedAt.localeCompare(a.updatedAt)
+      );
+      saveDrafts(meaningful);
+      return meaningful;
+    });
+
+    setDraftSaveStatus("saved");
+    setTimeout(() => setDraftSaveStatus("idle"), 1200);
+  };
+
+  const scheduleAutoSave = () => {
+    if (!showSingleForm) return;
+    setDraftSaveStatus("saving");
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+    }
+    autoSaveTimerRef.current = setTimeout(() => {
+      flushAutoSave();
+    }, AUTO_SAVE_DEBOUNCE_MS);
+  };
+
+  const handleNewDraft = () => {
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
+    flushAutoSave();
+
+    setTimeout(() => {
+      const nd = createEmptyDraft();
+      setCurrentDraftId(nd.id);
+      setSingleForm({ ...EMPTY_DRAFT_FORM });
+      setSinglePosition({ ...EMPTY_POSITION });
+      setDraftSaveStatus("idle");
+    }, 50);
+  };
+
+  const handleSwitchDraft = (draftId: string) => {
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
+    flushAutoSave();
+
+    setTimeout(() => {
+      const target = drafts.find((d) => d.id === draftId);
+      if (!target) return;
+      setCurrentDraftId(target.id);
+      setSingleForm({
+        collectionNo: target.collectionNo,
+        speciesName: target.speciesName,
+        collectionLocation: target.collectionLocation,
+        altitude: target.altitude,
+        collector: target.collector,
+        habitat: target.habitat,
+        pressStatus: target.pressStatus,
+        identifyStatus: target.identifyStatus,
+      });
+      setSinglePosition({ ...target.storagePosition });
+      setDraftSaveStatus("idle");
+    }, 50);
+  };
+
+  const handleDeleteDraft = (draftId: string) => {
+    if (autoSaveTimerRef.current && draftId === currentDraftId) {
+      clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
+
+    setDrafts((prev) => {
+      const updated = prev.filter((d) => d.id !== draftId);
+      saveDrafts(updated);
+      return updated;
+    });
+
+    if (draftId === currentDraftId) {
+      const nd = createEmptyDraft();
+      setCurrentDraftId(nd.id);
+      setSingleForm({ ...EMPTY_DRAFT_FORM });
+      setSinglePosition({ ...EMPTY_POSITION });
+      setDraftSaveStatus("idle");
+    }
+  };
+
+  const clearCurrentDraftAfterSave = () => {
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
+    if (currentDraftId) {
+      setDrafts((prev) => {
+        const updated = prev.filter((d) => d.id !== currentDraftId);
+        saveDrafts(updated);
+        return updated;
+      });
+    }
+    const nd = createEmptyDraft();
+    setCurrentDraftId(nd.id);
+  };
+
+  if (!draftsLoadedRef.current) {
+    initializeDrafts();
+  }
+
+  useMemo(() => {
+    if (!showSingleForm) return;
+    if (!draftsLoadedRef.current) return;
+    if (!currentDraftId) {
+      const nd = createEmptyDraft();
+      setCurrentDraftId(nd.id);
+      return;
+    }
+  }, [showSingleForm]);
+
+  useMemo(() => {
+    if (!showSingleForm || !draftsLoadedRef.current) return;
+    scheduleAutoSave();
+  }, [
+    singleForm.collectionNo,
+    singleForm.speciesName,
+    singleForm.collectionLocation,
+    singleForm.altitude,
+    singleForm.collector,
+    singleForm.habitat,
+    singleForm.pressStatus,
+    singleForm.identifyStatus,
+    singlePosition.floor,
+    singlePosition.cabinet,
+    singlePosition.shelf,
+    singlePosition.slot,
+  ]);
 
   const existingCollectionNos = useMemo(() => {
     return new Set(queue.map((r) => r.collectionNo).filter(Boolean));
@@ -1536,6 +1849,13 @@ function App() {
     setSingleForm((prev) => ({ ...prev, [field]: value }));
   };
 
+  const handleDraftPositionChange = (
+    field: keyof StoragePosition,
+    value: string
+  ) => {
+    handlePositionChange(setSinglePosition, field, value);
+  };
+
   const handleSubmitSingle = () => {
     const missingFields: string[] = [];
     REQUIRED_FIELDS.forEach(({ key, label }) => {
@@ -1545,6 +1865,16 @@ function App() {
     });
 
     const storageFormatted = formatStoragePosition(singlePosition);
+    const press = singleForm.pressStatus || "待压制";
+    const identify = singleForm.identifyStatus || "待鉴定";
+    let computedStatus: SpecimenRecord["status"] = "待压制";
+    if (press === "已压制" && identify === "已鉴定") {
+      computedStatus = "已入库";
+    } else if (press === "已压制") {
+      computedStatus = "待鉴定";
+    } else {
+      computedStatus = "待压制";
+    }
 
     const newRecord: SpecimenRecord = {
       id: generateId(),
@@ -1554,11 +1884,11 @@ function App() {
       altitude: singleForm.altitude,
       collector: singleForm.collector,
       habitat: singleForm.habitat,
-      status: "待压制",
+      status: computedStatus,
       storageLocation: storageFormatted,
       storagePosition: storageFormatted ? { ...singlePosition } : undefined,
-      pressStatus: "待压制",
-      identifyStatus: "待鉴定",
+      pressStatus: press,
+      identifyStatus: identify,
       missingFields,
       isDuplicate: singleForm.collectionNo
         ? existingCollectionNos.has(singleForm.collectionNo)
@@ -1583,14 +1913,8 @@ function App() {
     }
 
     setQueue((prev) => [newRecord, ...prev]);
-    setSingleForm({
-      collectionNo: "",
-      speciesName: "",
-      collectionLocation: "",
-      altitude: "",
-      collector: "",
-      habitat: "",
-    });
+    clearCurrentDraftAfterSave();
+    setSingleForm({ ...EMPTY_DRAFT_FORM });
     setSinglePosition({ ...EMPTY_POSITION });
     setShowSingleForm(false);
   };
@@ -1797,14 +2121,8 @@ function App() {
     } else if (pair.resolution === "keep") {
     }
 
-    setSingleForm({
-      collectionNo: "",
-      speciesName: "",
-      collectionLocation: "",
-      altitude: "",
-      collector: "",
-      habitat: "",
-    });
+    clearCurrentDraftAfterSave();
+    setSingleForm({ ...EMPTY_DRAFT_FORM });
     setSinglePosition({ ...EMPTY_POSITION });
     setShowSingleForm(false);
   };
@@ -2000,9 +2318,110 @@ function App() {
               <div className="heading sub-heading">
                 <div>
                   <p>单份录入</p>
-                  <h2>新增标本记录</h2>
+                  <h2>
+                    新增标本记录
+                    {drafts.length > 0 && (
+                      <span className="preview-summary">
+                        {" "}· 草稿箱 {drafts.length} 份
+                        {currentDraftId && drafts.some((d) => d.id === currentDraftId) && (
+                          <span className="text-success"> · 正在编辑</span>
+                        )}
+                      </span>
+                    )}
+                    <span className="draft-save-status">
+                      {draftSaveStatus === "saving" && (
+                        <span className="draft-status-saving">💾 自动保存中...</span>
+                      )}
+                      {draftSaveStatus === "saved" && (
+                        <span className="draft-status-saved">✓ 已自动保存</span>
+                      )}
+                    </span>
+                  </h2>
+                </div>
+                <div className="draft-actions-bar">
+                  <button
+                    className="btn-outline btn-small draft-new-btn"
+                    onClick={handleNewDraft}
+                  >
+                    📝 新建草稿
+                  </button>
                 </div>
               </div>
+
+              {drafts.length > 0 && (
+                <div className="draft-panel">
+                  <div className="draft-panel-header">
+                    <span className="draft-panel-title">
+                      📁 本地草稿箱
+                      <small>点击切换草稿，所有改动会自动保存</small>
+                    </span>
+                  </div>
+                  <div className="draft-list">
+                    {drafts.map((d) => {
+                      const isActive = d.id === currentDraftId;
+                      const completion = getDraftCompletion(d);
+                      return (
+                        <div
+                          key={d.id}
+                          className={`draft-card ${isActive ? "draft-card-active" : ""}`}
+                          onClick={() => !isActive && handleSwitchDraft(d.id)}
+                        >
+                          <div className="draft-card-main">
+                            <div className="draft-card-title-row">
+                              <span className="draft-card-title" title={getDraftTitle(d)}>
+                                {isActive && "▶ "}
+                                {getDraftTitle(d)}
+                              </span>
+                              <span className="draft-card-completion">
+                                {completion.filled}/{completion.total}
+                              </span>
+                            </div>
+                            <div className="draft-card-meta">
+                              <span className="draft-card-time">
+                                更新：{d.updatedAt}
+                              </span>
+                              {d.collectionNo && (
+                                <span className="draft-card-no">{d.collectionNo}</span>
+                              )}
+                              {d.speciesName && !d.collectionNo && (
+                                <span className="draft-card-species">{d.speciesName}</span>
+                              )}
+                              {d.collectionLocation && (
+                                <span className="draft-card-loc">📍 {d.collectionLocation}</span>
+                              )}
+                            </div>
+                            <div className="draft-progress-bar">
+                              <div
+                                className="draft-progress-fill"
+                                style={{
+                                  width: `${(completion.filled / completion.total) * 100}%`,
+                                }}
+                              />
+                            </div>
+                          </div>
+                          <button
+                            className="draft-delete-btn"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (
+                                window.confirm(
+                                  `确认删除草稿「${getDraftTitle(d)}」？此操作不可撤销。`
+                                )
+                              ) {
+                                handleDeleteDraft(d.id);
+                              }
+                            }}
+                            title="删除草稿"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               <div className="field-grid">
                 <label>
                   <span>采集号 *</span>
@@ -2058,6 +2477,34 @@ function App() {
                     onChange={(e) => handleSingleFormChange("habitat", e.target.value)}
                   />
                 </label>
+                <label>
+                  <span>压制状态</span>
+                  <select
+                    className="storage-select"
+                    value={singleForm.pressStatus}
+                    onChange={(e) => handleSingleFormChange("pressStatus", e.target.value)}
+                  >
+                    {PRESS_STATUS_OPTIONS.map((opt) => (
+                      <option key={opt} value={opt}>
+                        {opt}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>鉴定状态</span>
+                  <select
+                    className="storage-select"
+                    value={singleForm.identifyStatus}
+                    onChange={(e) => handleSingleFormChange("identifyStatus", e.target.value)}
+                  >
+                    {IDENTIFY_STATUS_OPTIONS.map((opt) => (
+                      <option key={opt} value={opt}>
+                        {opt}
+                      </option>
+                    ))}
+                  </select>
+                </label>
               </div>
 
               <div className="storage-section">
@@ -2071,7 +2518,7 @@ function App() {
                     <select
                       value={singlePosition.floor}
                       onChange={(e) =>
-                        handlePositionChange(setSinglePosition, "floor", e.target.value)
+                        handleDraftPositionChange("floor", e.target.value)
                       }
                       className="storage-select"
                     >
@@ -2088,7 +2535,7 @@ function App() {
                     <select
                       value={singlePosition.cabinet}
                       onChange={(e) =>
-                        handlePositionChange(setSinglePosition, "cabinet", e.target.value)
+                        handleDraftPositionChange("cabinet", e.target.value)
                       }
                       className="storage-select"
                       disabled={!singlePosition.floor}
@@ -2106,7 +2553,7 @@ function App() {
                     <select
                       value={singlePosition.shelf}
                       onChange={(e) =>
-                        handlePositionChange(setSinglePosition, "shelf", e.target.value)
+                        handleDraftPositionChange("shelf", e.target.value)
                       }
                       className="storage-select"
                       disabled={!singlePosition.cabinet}
@@ -2124,7 +2571,7 @@ function App() {
                     <select
                       value={singlePosition.slot}
                       onChange={(e) =>
-                        handlePositionChange(setSinglePosition, "slot", e.target.value)
+                        handleDraftPositionChange("slot", e.target.value)
                       }
                       className="storage-select"
                       disabled={!singlePosition.shelf}
@@ -2147,17 +2594,17 @@ function App() {
               </div>
 
               <div className="single-entry-actions">
-                <button className="ghost-btn" onClick={() => {
-                  setSingleForm({
-                    collectionNo: "",
-                    speciesName: "",
-                    collectionLocation: "",
-                    altitude: "",
-                    collector: "",
-                    habitat: "",
-                  });
-                  setSinglePosition({ ...EMPTY_POSITION });
-                }}>
+                <button
+                  className="ghost-btn"
+                  onClick={() => {
+                    if (
+                      window.confirm("确认清空当前表单？已保存到草稿箱的内容不受影响。")
+                    ) {
+                      setSingleForm({ ...EMPTY_DRAFT_FORM });
+                      setSinglePosition({ ...EMPTY_POSITION });
+                    }
+                  }}
+                >
                   清空表单
                 </button>
                 <button
